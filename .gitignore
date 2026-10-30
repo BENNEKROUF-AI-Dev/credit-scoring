@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Données : jamais de données clients dans le dépôt
+data/*
+!data/.gitkeep
+*.csv
+mlruns/
+mlartifacts/
+
+# Rapports générés
+monitoring/reports/*
+!monitoring/reports/.gitkeep
+
+# Secrets
+.env
+*.pem
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+.ipynb_checkpoints/

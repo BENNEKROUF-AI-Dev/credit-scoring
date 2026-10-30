@@ -1,0 +1,14 @@
+-r requirements.txt
+# Tests
+pytest==9.1.1
+pytest-cov
+httpx==0.28.1
+# Préparation / optimisation du modèle
+onnx==1.23.2
+onnxmltools==1.16.0
+pyarrow==26.0.0
+# Monitoring
+evidently==0.7.23
+streamlit==1.66.1
+plotly==5.24.1
+requests
