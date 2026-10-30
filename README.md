@@ -1,4 +1,4 @@
-# Prêt à Dépenser — API de scoring crédit (MLOps)
+﻿# Prêt à Dépenser — API de scoring crédit (MLOps)
 
 Mise en production du modèle de scoring développé au projet précédent (notebooks
 `01_exploration_feature_engineering` et `02_modelisation`, modèle enregistré dans MLflow sous
@@ -10,7 +10,7 @@ Mise en production du modèle de scoring développé au projet précédent (note
 - le **monitoring et la détection de data drift** (Evidently, Streamlit) ;
 - l'**optimisation de l'inférence** (profiling, ONNX Runtime).
 
-![CI/CD](https://github.com/<votre-compte>/<votre-repo>/actions/workflows/ci-cd.yml/badge.svg)
+![CI/CD](https://github.com/BENNEKROUF-AI-Dev/credit-scoring-mlops/actions/workflows/ci-cd.yml/badge.svg)
 
 ## Architecture
 
