@@ -1,0 +1,23 @@
+         5679693 function calls (5559093 primitive calls) in 5.379 seconds
+
+   Ordered by: cumulative time
+   List reduced from 604 to 15 due to restriction <15>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      300    0.013    0.000    5.379    0.018 /home/claude/credit-scoring-mlops/scripts/benchmark.py:70(<lambda>)
+      300    0.025    0.000    4.260    0.014 /home/claude/credit-scoring-mlops/app/features.py:51(build_features)
+     3900    0.030    0.000    1.481    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4337(__getitem__)
+     2100    0.017    0.000    1.213    0.001 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4559(__setitem__)
+     2100    0.005    0.000    1.103    0.001 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4864(_set_item)
+     2100    0.020    0.000    1.049    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4848(_set_item_mgr)
+     2100    0.022    0.000    0.976    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/internals/managers.py:1544(insert)
+      900    0.011    0.000    0.857    0.001 /usr/local/lib/python3.13/site-packages/pandas/core/indexes/base.py:6288(_get_indexer_strict)
+      300    0.007    0.000    0.727    0.002 /usr/local/lib/python3.13/site-packages/lightgbm/sklearn.py:1761(predict_proba)
+      300    0.010    0.000    0.713    0.002 /usr/local/lib/python3.13/site-packages/lightgbm/sklearn.py:1219(predict)
+     1800    0.024    0.000    0.553    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/internals/managers.py:399(apply)
+     1800    0.016    0.000    0.524    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/indexes/base.py:3656(get_indexer)
+     5100    0.009    0.000    0.478    0.000 /usr/local/lib/python3.13/site-packages/pandas/_config/config.py:143(get_option)
+      300    0.004    0.000    0.459    0.002 /usr/local/lib/python3.13/site-packages/pandas/core/generic.py:7375(replace)
+     3000    0.059    0.000    0.457    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/indexes/base.py:2457(is_unique)
+
+
