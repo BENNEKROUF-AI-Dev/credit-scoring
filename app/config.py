@@ -5,14 +5,13 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 MODEL_DIR = Path(os.getenv("MODEL_DIR", ROOT_DIR / "model"))
-MODEL_PATH = MODEL_DIR / "model.joblib"
-ONNX_MODEL_PATH = MODEL_DIR / "model.onnx"
 MODEL_META_PATH = MODEL_DIR / "model_meta.json"
+SAMPLE_CLIENTS_PATH = MODEL_DIR / "sample_clients.parquet"
 REFERENCE_DATA_PATH = MODEL_DIR / "reference_data.parquet"
 
-# "onnx" (optimisé, par défaut si le fichier existe) ou "lightgbm" (natif)
+# "onnx" (optimisé, par défaut) ou "lightgbm" (booster natif model.txt)
 MODEL_BACKEND = os.getenv("MODEL_BACKEND", "onnx")
-# Feature engineering NumPy (optimisé) ; 0 = version pandas v1
+# Préparation des données en NumPy (optimisé) ; 0 = version pandas v1
 FAST_FEATURES = os.getenv("FAST_FEATURES", "1") == "1"
 
 DATA_DIR = Path(os.getenv("DATA_DIR", ROOT_DIR / "data"))

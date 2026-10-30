@@ -1,24 +1,34 @@
 # Prêt à Dépenser — API de scoring crédit (MLOps)
 
-Mise en production du modèle de scoring : API **FastAPI** avec une interface **Gradio**, image
-**Docker**, pipeline **CI/CD GitHub Actions** (tests, build, déploiement sur Hugging Face Spaces),
-stockage des données de production, **monitoring et détection de data drift** (Evidently,
-Streamlit) et **optimisation de l'inférence** (profiling, ONNX Runtime).
+Mise en production du modèle de scoring développé au projet précédent (notebooks
+`01_exploration_feature_engineering` et `02_modelisation`, modèle enregistré dans MLflow sous
+`scoring_credit`). Le projet comprend :
+- une API **FastAPI** avec une interface **Gradio** ;
+- une image **Docker** ;
+- un pipeline **CI/CD GitHub Actions** (tests, build, déploiement sur Hugging Face Spaces) ;
+- le stockage des données de production ;
+- le **monitoring et la détection de data drift** (Evidently, Streamlit) ;
+- l'**optimisation de l'inférence** (profiling, ONNX Runtime).
 
 ![CI/CD](https://github.com/<votre-compte>/<votre-repo>/actions/workflows/ci-cd.yml/badge.svg)
 
 ## Architecture
 
 ```
-          ┌────────────── GitHub Actions (push sur main) ───────────────┐
-          │  1. pytest (39 tests)  →  2. docker build + smoke test  →   │
-          │  3. push image GHCR    →  4. déploiement Hugging Face Space │
+ Projet précédent                         Ce dépôt
+ ───────────────                          ────────
+ notebook 1 → app_features.parquet ─┐
+ notebook 2 → MLflow scoring_credit ─┴─► scripts/export_model.py ─► model/ (ONNX, métadonnées)
+                                                                        │
+          ┌────────────── GitHub Actions (push sur main) ───────────────┤
+          │  1. pytest  →  2. docker build + smoke test  →  3. GHCR  →  4. Hugging Face Space
           └─────────────────────────────────────────────────────────────┘
                                          │
- Client ──HTTP──► FastAPI /predict ──► Pydantic (validation) ──► features NumPy ──► ONNX Runtime
-                     │  /ui (Gradio)                                                   │
-                     ▼                                                                 ▼
-          logs JSON (predictions.jsonl) + SQLite (predictions.db)  ◄──── score, décision, latences
+ Client ──HTTP──► FastAPI /predict ──► validation Pydantic ──► variables dérivées (notebook 1)
+                     │  /ui (Gradio)       ──► encodage get_dummies/noms_propres (notebook 2, en NumPy)
+                     │                     ──► ONNX Runtime ──► score + décision (seuil métier)
+                     ▼
+          logs JSON (predictions.jsonl) + SQLite (predictions.db)
                      │
                      ▼
      monitoring/drift_analysis.py (Evidently, PSI, alertes)  ──►  dashboard Streamlit
@@ -29,15 +39,14 @@ Streamlit) et **optimisation de l'inférence** (profiling, ONNX Runtime).
 ```
 app/                    code de l'API (embarqué dans l'image Docker)
   main.py               endpoints FastAPI, chargement unique du modèle (lifespan), logging
-  schemas.py            validation des entrées (types, plages, cohérence)
-  features.py           feature engineering (pandas pour l'entraînement, NumPy pour l'inférence)
+  schemas.py            validation des entrées (générée depuis les métadonnées du modèle)
+  preprocessing.py      transformations des notebooks 1 et 2 (versions pandas et NumPy)
   model.py              chargement et inférence (ONNX Runtime ou LightGBM)
   storage.py            stockage des données de production (JSON + SQLite)
   ui.py                 interface Gradio
-model/                  artefacts : model.joblib, model.onnx, model_meta.json, reference_data.parquet
+model/                  artefacts produits par scripts/export_model.py
 scripts/
-  prepare_model.py      exporte le modèle (MLflow, Home Credit ou données synthétiques)
-  convert_to_onnx.py    conversion ONNX et vérification de non-régression
+  export_model.py       récupère le modèle MLflow, vérifie l'encodage, convertit en ONNX
   simulate_traffic.py   simulation de trafic de production (avec dérive)
   benchmark.py          profiling cProfile et comparaison des optimisations
   deploy_hf_space.py    déploiement Hugging Face (appelé par la CI/CD)
@@ -50,15 +59,41 @@ docs/                   rapport d'optimisation, étude du drift, captures d'écr
 Dockerfile
 ```
 
-## Démarrage rapide
+## 1. Exporter le modèle du projet précédent
+
+Cette étape se fait une seule fois, et à nouveau à chaque nouveau modèle. Utilisez le **Python du
+projet précédent** : il contient déjà mlflow et lightgbm dans les bonnes versions.
 
 ```bash
-python -m venv .venv && source .venv/bin/activate      # Windows : .venv\Scripts\activate
+pip install onnxmltools skl2onnx onnxruntime pyarrow     # dans l'environnement du projet précédent
+cd chemin/vers/credit-scoring-mlops
+python -m scripts.export_model --features "chemin/vers/app_features.parquet" \
+       --tracking-uri "file:chemin/vers/mlruns"
+```
+
+Le script :
+1. charge `models:/scoring_credit/latest` et lit le seuil métier dans la métrique `seuil` du run ;
+2. **vérifie** que l'encodage de l'API (variables dérivées, `get_dummies`, `noms_propres`) donne
+   exactement les mêmes scores que le notebook, sur 2 000 dossiers du jeu de test ;
+3. convertit le modèle en **ONNX** et vérifie la non-régression (100 % de décisions identiques) ;
+4. écrit dans `model/` :
+   - `model.onnx` et `model.txt` (booster LightGBM) ;
+   - `model_meta.json` (seuil, colonnes, catégories) ;
+   - 1 000 dossiers d'exemple ;
+   - la référence pour le drift.
+
+Options utiles :
+- `--model-uri models:/scoring_credit/3` pour choisir une version précise ;
+- `--seuil 0.4` pour forcer le seuil ;
+- `--retrain` si vous n'avez plus le dossier `mlruns` : le script ré-entraîne avec les réglages du
+  notebook 2.
+
+## 2. Lancer l'API
+
+```bash
+python -m venv .venv && .venv\Scripts\activate      # Mac/Linux : source .venv/bin/activate
 pip install -r requirements-dev.txt
-
-# (facultatif : les artefacts sont déjà versionnés dans model/)
-python -m scripts.prepare_model && python -m scripts.convert_to_onnx
-
+python -m pytest
 uvicorn app.main:app --port 7860
 ```
 
@@ -69,7 +104,7 @@ uvicorn app.main:app --port 7860
 
 ```bash
 docker build -t credit-scoring-api .
-docker run -p 7860:7860 -v $(pwd)/data:/app/data credit-scoring-api
+docker run -p 7860:7860 -v "$(pwd)/data:/app/data" credit-scoring-api
 ```
 
 Le volume `data/` conserve les logs de production hors du conteneur.
@@ -79,55 +114,66 @@ Le volume `data/` conserve les logs de production hors du conteneur.
 | Méthode | Endpoint | Rôle |
 |---|---|---|
 | GET | `/health` | État de l'API et du modèle |
-| GET | `/model-info` | Version, seuil métier, métriques, variables attendues |
-| POST | `/predict` | Score d'un client |
+| GET | `/model-info` | Version, algorithme, seuil, métriques, champs acceptés |
+| GET | `/clients`, `/clients/{id}` | Dossiers d'exemple (jeu de test), prêts à envoyer |
+| POST | `/predict` | Score d'un dossier client |
+
+**Format d'entrée.** Le corps de `/predict` est le dossier client au format du notebook 1 : les
+variables de la demande et l'historique agrégé (`BUREAU_*`, `PREV_*`, `INST_*`…), sous leurs noms
+d'origine.
+- **Champs obligatoires** : `AMT_INCOME_TOTAL`, `AMT_CREDIT`, `DAYS_BIRTH`, `CODE_GENDER`.
+- **Tous les autres sont facultatifs** : un champ absent est traité comme une information manquante,
+  comme pour un client sans historique.
+- **Variables dérivées** (`DAYS_EMPLOYED_ANOM`, `*_MISSING`) : l'API les recalcule elle-même.
+- **Code `DAYS_EMPLOYED = 365243`** (sans emploi) : accepté et traité comme dans le notebook 1.
 
 ```bash
 curl -X POST http://localhost:7860/predict -H "Content-Type: application/json" -d '{
-  "EXT_SOURCE_1": 0.45, "EXT_SOURCE_2": 0.62, "EXT_SOURCE_3": 0.51,
   "AMT_INCOME_TOTAL": 180000, "AMT_CREDIT": 600000, "AMT_ANNUITY": 28000,
-  "AMT_GOODS_PRICE": 540000, "DAYS_BIRTH": -14000, "DAYS_EMPLOYED": -2500,
-  "CNT_CHILDREN": 1, "CODE_GENDER": "F", "NAME_EDUCATION_TYPE": "Higher education"}'
+  "DAYS_BIRTH": -14000, "CODE_GENDER": "F", "EXT_SOURCE_2": 0.62, "EXT_SOURCE_3": 0.51}'
 ```
 ```json
-{"request_id": "…", "score": 0.124, "threshold": 0.49, "decision": "ACCORDE",
- "model_version": "v1.0.0", "inference_ms": 0.21}
+{"request_id": "…", "score": 0.21, "threshold": 0.44, "decision": "ACCORDE",
+ "model_version": "v1", "inference_ms": 0.2}
 ```
 
 - `score` est la probabilité de défaut.
 - `decision` vaut `REFUSE` si le score est supérieur ou égal au seuil métier. Ce seuil minimise un
-  coût où un faux négatif coûte 10 fois plus qu'un faux positif.
+  coût où un défaut non détecté coûte 10 fois plus qu'un refus injustifié (notebook 2).
 
-**Validation et erreurs :** une requête invalide renvoie le code **422** avec le détail. C'est le cas
-si un champ obligatoire manque, si une valeur est hors plage (revenu ≤ 0, âge < 18 ans,
-`EXT_SOURCE` > 1…), si le type est faux (texte à la place d'un nombre), si la catégorie est inconnue,
-si un champ inconnu est présent ou si une annuité dépasse le crédit. Une erreur interne renvoie
-**500** et le message n'expose rien de l'implémentation. Les `EXT_SOURCE_*`, `AMT_GOODS_PRICE` et
-`DAYS_EMPLOYED` sont facultatifs : le modèle gère les valeurs manquantes.
+**Validation et erreurs :** une requête invalide renvoie le code **422** avec le détail. C'est le cas :
+- si un champ obligatoire manque ;
+- si une valeur est hors plage (revenu ≤ 0, âge < 18 ans, `EXT_SOURCE` > 1, date d'embauche dans le
+  futur…) ;
+- si le type est faux (texte à la place d'un nombre) ;
+- si une catégorie est inconnue de l'entraînement ;
+- si un champ inconnu est présent (dont `SK_ID_CURR`, refusé pour le RGPD) ou si une variable
+  dérivée est envoyée ;
+- si une annuité dépasse le crédit.
+
+Une erreur interne renvoie **500**, sans détail d'implémentation.
 
 **Variables d'environnement :**
 
 | Variable | Défaut | Rôle |
 |---|---|---|
 | `MODEL_BACKEND` | `onnx` | `onnx` ou `lightgbm` |
-| `FAST_FEATURES` | `1` | `0` pour revenir aux features pandas (v1) |
+| `FAST_FEATURES` | `1` | `0` pour revenir à la préparation pandas (v1) |
 | `DATA_DIR` | `data/` | Emplacement des logs |
 | `ENABLE_UI` | `1` | Monte l'interface Gradio |
 
 ## Tests
 
 ```bash
-pytest -v --cov=app
+python -m pytest -v --cov=app
 ```
 
-39 tests :
-- endpoints de l'API ;
-- cas critiques : données manquantes, valeurs hors plage, types incorrects ;
-- stockage des prédictions ;
-- feature engineering ;
-- non-régression ONNX par rapport à LightGBM ;
-- interface Gradio et erreur interne (500) ;
-- garde-fou d’AUC.
+41 tests, qui couvrent notamment :
+- **la non-régression** : l'API redonne les scores du modèle MLflow d'origine sur les dossiers
+  d'exemple, et l'encodage NumPy est identique à l'encodage pandas du notebook ;
+- **les cas critiques** : données manquantes, valeurs hors plage, mauvais types, catégories
+  inconnues ;
+- les variables dérivées, le stockage, l'interface Gradio et les erreurs 500.
 
 ## CI/CD (`.github/workflows/ci-cd.yml`)
 
@@ -135,8 +181,8 @@ Déclenché à chaque push et pull request sur `main`.
 
 1. **test** : installation, puis `pytest` avec une couverture minimale de 80 %.
 2. **build** (seulement si les tests passent) : construction de l'image Docker, puis *smoke test* du
-   conteneur (`/health`, une prédiction valide, une requête invalide qui doit renvoyer 422). Sur
-   `main`, l'image est publiée sur GitHub Container Registry.
+   conteneur. Il appelle `/health`, envoie un dossier minimal et un dossier complet, puis vérifie
+   qu'une requête invalide renvoie 422. Sur `main`, l'image est publiée sur GitHub Container Registry.
 3. **deploy** (seulement sur `main`) : déploiement sur un Hugging Face Space (SDK Docker).
 
 **Configuration du déploiement :**
@@ -145,8 +191,7 @@ Déclenché à chaque push et pull request sur `main`.
 3. Ajoutez le **secret** `HF_TOKEN`.
 4. Ajoutez la **variable** `HF_SPACE` (par exemple `mon-pseudo/credit-scoring-api`).
 
-Aucun identifiant n'est écrit dans le code. Sans ces réglages, le job de déploiement est simplement
-ignoré.
+Aucun identifiant n'est écrit dans le code. Sans ces réglages, le job de déploiement est ignoré.
 
 ## Monitoring : lancer et interpréter
 
@@ -156,46 +201,37 @@ python -m monitoring.drift_analysis      # rapport Evidently + summary.json + al
 streamlit run monitoring/dashboard.py    # http://localhost:8501
 ```
 
+Le drift est suivi sur les **15 variables les plus importantes du modèle** et sur le score. Cette
+liste est calculée à l'export, à partir de l'importance des variables du LightGBM.
+
 **Comment lire le dashboard :**
 
 | Indicateur | Lecture | Alerte si |
 |---|---|---|
 | Taux d'erreur | Part des requêtes en 4xx ou 5xx. Un pic de 422 signale souvent un client de l'API mal intégré | > 5 % |
-| Latence API / inférence (p50, p95) | p95 = temps sous lequel passent 95 % des requêtes. Inférence = modèle et features seuls | p95 > 200 ms |
+| Latence API / inférence (p50, p95) | p95 = temps sous lequel passent 95 % des requêtes | p95 > 200 ms |
 | Distribution des scores | Histogramme production contre entraînement. Un décalage vers la droite signifie plus de clients jugés risqués | PSI > 0,2 |
 | Taux de refus | À comparer avec celui de la référence | ± 10 points |
 | PSI | < 0,1 : stable ; 0,1 à 0,2 : à surveiller ; > 0,2 : dérive significative | > 0,2 |
-| Onglet Data drift | Distribution de chaque variable (référence contre production), tableau Evidently, **dérive par fenêtre temporelle** | > 30 % de variables en dérive |
+| Onglet Data drift | Distribution de chaque variable surveillée, tableau Evidently, **dérive par fenêtre temporelle** | > 30 % de variables en dérive |
 
 L'analyse par fenêtres est essentielle : une dérive récente peut être noyée dans l'agrégat global.
 
 Pour aller plus loin :
 - [`docs/etude_data_drift.md`](docs/etude_data_drift.md) : étude de la dérive et points de vigilance ;
-- [`docs/rapport_optimisation.md`](docs/rapport_optimisation.md) : profiling et optimisations
-  (latence API divisée par 6, inférence 100 fois plus rapide, décisions identiques à 100 %).
-
-## Brancher le modèle de la partie 1 (MLflow)
-
-```bash
-# modèle LightGBM enregistré dans MLflow + données Home Credit
-python -m scripts.prepare_model --mlflow-model-uri "models:/credit_scoring/Production" \
-       --data data/application_train.csv --version v2.0.0
-python -m scripts.convert_to_onnx
-pytest
-```
-
-Si votre modèle utilise d'autres variables, adaptez `RAW_FEATURES` et `build_features` dans
-`app/features.py`, puis `build_features_fast` (le test d'équivalence vous signalera tout écart), et
-`app/schemas.py`. Les artefacts de `model/` sont versionnés avec le code. Pour des modèles plus
-lourds, utilisez Git LFS ou un téléchargement depuis le registre MLflow au build.
+- [`docs/rapport_optimisation.md`](docs/rapport_optimisation.md) : profiling et optimisations.
 
 ## Choix techniques
 
-- **FastAPI** : validation par Pydantic, Swagger automatique, performances. **Gradio** est monté sur
-  la même application pour une démo sans front-end.
+- **FastAPI** : validation par Pydantic, Swagger automatique. **Gradio** est monté sur la même
+  application pour une démo sans front-end.
+- **Schéma de validation généré depuis les métadonnées du modèle** : avec des centaines de
+  variables, un schéma écrit à la main serait impossible à maintenir. Les règles métier ne portent
+  que sur les variables clés.
+- **ONNX** : le modèle servi ne dépend plus des versions de scikit-learn ou LightGBM utilisées à
+  l'entraînement, et c'est le moteur le plus rapide mesuré.
 - **SQLite + JSON lines** : un PoC sans infrastructure. Le schéma est directement transposable à
-  PostgreSQL, et les logs JSON peuvent être collectés par Fluentd ou Logstash.
-- **Evidently** : tests statistiques adaptés au type de chaque variable, et rapport HTML partageable.
-  **Streamlit** : dashboard interactif écrit en Python.
-- **ONNX Runtime** : le moteur d'inférence le plus rapide mesuré, portable.
+  PostgreSQL, et les logs peuvent être collectés par Fluentd ou Logstash.
+- **Evidently + Streamlit** : tests statistiques adaptés au type de chaque variable, et dashboard
+  interactif écrit en Python.
 - **Hugging Face Spaces** : hébergement Docker gratuit, déploiement par API depuis la CI.

@@ -1,23 +1,23 @@
-         29401 function calls in 0.062 seconds
+         25120 function calls in 0.024 seconds
 
    Ordered by: cumulative time
-   List reduced from 44 to 15 due to restriction <15>
+   List reduced from 17 to 15 due to restriction <15>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-      300    0.002    0.000    0.061    0.000 /home/claude/credit-scoring-mlops/app/model.py:64(_predict_array)
-      300    0.017    0.000    0.040    0.000 /home/claude/credit-scoring-mlops/app/features.py:68(build_features_fast)
-      300    0.019    0.000    0.019    0.000 /usr/local/lib/python3.13/site-packages/onnxruntime/capi/onnxruntime_inference_collection.py:308(run)
-      300    0.001    0.000    0.006    0.000 /usr/local/lib/python3.13/site-packages/numpy/lib/_nanfunctions_impl.py:634(nansum)
-      300    0.004    0.000    0.006    0.000 /usr/local/lib/python3.13/site-packages/numpy/lib/_shape_base_impl.py:607(column_stack)
-      300    0.002    0.000    0.003    0.000 /usr/local/lib/python3.13/site-packages/numpy/lib/_nanfunctions_impl.py:70(_replace_nan)
-      300    0.001    0.000    0.003    0.000 /usr/local/lib/python3.13/site-packages/numpy/_core/shape_base.py:293(hstack)
-      300    0.001    0.000    0.002    0.000 /usr/local/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:2342(sum)
-      600    0.002    0.000    0.002    0.000 {method 'reduce' of 'numpy.ufunc' objects}
-      300    0.000    0.000    0.002    0.000 {method 'sum' of 'numpy.ndarray' objects}
-      300    0.001    0.000    0.002    0.000 /usr/local/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:66(_wrapreduction)
-      300    0.000    0.000    0.001    0.000 /usr/local/lib/python3.13/site-packages/numpy/_core/_methods.py:47(_sum)
+      300    0.001    0.000    0.023    0.000 /home/claude/credit-scoring-mlops/app/model.py:60(predict_array)
+      300    0.006    0.000    0.015    0.000 /home/claude/credit-scoring-mlops/app/preprocessing.py:116(transform)
+      300    0.007    0.000    0.007    0.000 /usr/local/lib/python3.13/site-packages/onnxruntime/capi/onnxruntime_inference_collection.py:308(run)
+      300    0.003    0.000    0.005    0.000 /home/claude/credit-scoring-mlops/app/preprocessing.py:55(derive)
+    17400    0.003    0.000    0.003    0.000 {method 'get' of 'dict' objects}
+     1800    0.001    0.000    0.002    0.000 /home/claude/credit-scoring-mlops/app/preprocessing.py:51(_missing)
       900    0.001    0.000    0.001    0.000 {method 'astype' of 'numpy.ndarray' objects}
-     2400    0.001    0.000    0.001    0.000 {built-in method numpy.array}
-     3900    0.001    0.000    0.001    0.000 {method 'get' of 'dict' objects}
+      300    0.001    0.000    0.001    0.000 /usr/local/lib/python3.13/site-packages/numpy/_core/numeric.py:323(full)
+      300    0.000    0.000    0.000    0.000 /usr/local/lib/python3.13/site-packages/onnxruntime/capi/onnxruntime_inference_collection.py:298(_validate_input)
+      300    0.000    0.000    0.000    0.000 {built-in method numpy.empty}
+     1119    0.000    0.000    0.000    0.000 {built-in method builtins.isinstance}
+      600    0.000    0.000    0.000    0.000 {built-in method builtins.len}
+      300    0.000    0.000    0.000    0.000 {method 'keys' of 'dict' objects}
+      300    0.000    0.000    0.000    0.000 {method 'items' of 'dict' objects}
+      300    0.000    0.000    0.000    0.000 {built-in method numpy.asarray}
 
 

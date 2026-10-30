@@ -1,108 +1,105 @@
 # Rapport d'optimisation post-déploiement
 
+> ⚠️ **À mettre à jour avec vos chiffres.** Les valeurs ci-dessous ont été obtenues sur un jeu de
+> données de démonstration au format de vos notebooks : 63 colonnes, contre plusieurs centaines pour
+> votre vrai modèle. Après l'export de votre modèle, relancez `python -m scripts.benchmark` et
+> reportez les résultats de `docs/benchmark_results.md`. Plus votre modèle a de colonnes, plus le
+> gain de l'étape 3 sera important.
+
 ## 1. Point de départ : ce que montrait le monitoring
 
-Première version déployée (v1) : feature engineering avec **pandas**, puis modèle LightGBM appelé
-via `predict_proba` de scikit-learn. Le dashboard de monitoring montrait alors, sur 1 500 requêtes
-simulées :
+Première version (v1) : la préparation des données reproduit le notebook 2 avec **pandas**
+(`pd.DataFrame` d'une ligne, puis `get_dummies`, renommage et réalignement des colonnes). Le
+modèle est ensuite appelé. Mesures sur l'API :
 
 | Indicateur (v1) | Valeur |
 |---|---|
-| Latence API p50 / p95 | 7,9 ms / 10,9 ms |
-| Temps d'inférence p50 | 7,2 ms |
+| Latence API p50 / p95 | 22,7 ms / 28,2 ms |
+| Temps d'inférence p50 (préparation + modèle) | environ 15,6 ms |
 
-**Constat :** le temps d'inférence représentait plus de 90 % de la latence de l'API. Le goulot
-d'étranglement est donc dans le code Python de prédiction, pas dans le réseau ni dans FastAPI.
+**Constat :** le temps d'inférence représente environ 70 % de la latence. Le goulot d'étranglement
+est dans notre code, pas dans le réseau ni dans FastAPI.
 
 ## 2. Profiling (cProfile)
 
-`python -m scripts.benchmark` lance cProfile sur 300 prédictions unitaires (sortie complète :
+`python -m scripts.benchmark` lance cProfile sur 300 prédictions (sortie complète :
 `docs/profiling_v1.txt`).
 
 | Fonction | Temps cumulé | Part |
 |---|---|---|
-| Chemin complet d'une prédiction | 5,38 s | 100 % |
-| `build_features` (pandas) | 4,26 s | **79 %** |
-| `LGBMClassifier.predict_proba` (sklearn) | 0,73 s | 14 % |
+| Chemin complet d'une prédiction | 11,6 s | 100 % |
+| `transform_pandas` (préparation) | 11,4 s | **98 %** |
+| dont `pd.get_dummies` | 3,7 s | 32 % |
+| dont création et affectation de colonnes (`__setitem__`) | 4,2 s | 36 % |
 
-La décomposition mesurée confirme (p50 pour **un** client) :
+Décomposition mesurée (p50, un client) :
 
 | Étape | p50 |
 |---|---|
-| Features avec pandas | 6,41 ms |
-| Features avec NumPy | 0,055 ms |
-| Modèle via `predict_proba` sklearn (DataFrame d'une ligne) | 1,48 ms |
-| Modèle via le booster LightGBM natif | 0,050 ms |
-| Modèle via ONNX Runtime | 0,030 ms |
+| Préparation pandas | 14,8 ms |
+| Préparation NumPy | 0,015 ms |
+| Modèle, booster LightGBM natif | 0,036 ms |
+| Modèle, ONNX Runtime | 0,019 ms |
 
-**Goulots d'étranglement identifiés :**
-1. **pandas sur une seule ligne** : chaque création ou sélection de colonne coûte environ 50 à 100 µs
-   d'overhead (index, vérifications de type, options). C'est négligeable en batch mais domine en
-   temps réel.
-2. **Le wrapper sklearn de LightGBM** : il valide le DataFrame et convertit les données à chaque appel.
-   Le calcul sur les arbres ne prend lui-même que quelques dizaines de µs.
+**Goulot d'étranglement :** pandas, sur une seule ligne. Chaque création de colonne et chaque appel
+à `get_dummies` coûte des dizaines de µs d'overhead (index, vérifications de type). Avec des
+centaines de colonnes, ce coût se multiplie. Le calcul sur les arbres du modèle ne pèse presque
+rien.
 
 ## 3. Stratégies testées
 
 | # | Stratégie | p50 (ms) | p95 (ms) | Gain p50 |
 |---|---|---|---|---|
-| v1 | pandas + `predict_proba` sklearn | 7,68 | 11,00 | ×1 |
-| A | pandas + booster LightGBM natif | 6,58 | 9,87 | ×1,2 |
-| B | pandas + ONNX Runtime | 5,82 | 9,07 | ×1,3 |
-| C | NumPy + booster LightGBM natif | 0,113 | 0,226 | ×68 |
-| **Finale** | **NumPy + ONNX Runtime (1 thread)** | **0,072** | **0,136** | **×106** |
+| v1 | Préparation pandas + booster LightGBM | 15,62 | 24,35 | ×1 |
+| A | Préparation pandas + ONNX Runtime | 15,97 | 24,48 | ×1 |
+| B | Préparation NumPy + booster LightGBM | 0,064 | 0,142 | ×246 |
+| **Finale** | **Préparation NumPy + ONNX Runtime (1 thread)** | **0,035** | **0,052** | **×443** |
 
-- **Optimisation de code** (`build_features_fast`) : réécriture du feature engineering en NumPy pur,
-  sans DataFrame. C'est le gain principal. La version pandas reste utilisée pour l'entraînement et le
-  scoring en batch.
-- **ONNX Runtime** : conversion avec `onnxmltools` (sortie sous forme de tenseur, sans ZipMap). On gagne
-  encore environ 40 % sur le calcul du modèle. Le fichier est aussi plus léger (0,92 Mo contre 1,39 Mo).
+- **Optimisation de code** (`Preprocessor.transform`) : la correspondance entre une variable (ou une
+  catégorie) et une colonne du modèle est calculée **une seule fois**, à l'export. À chaque requête,
+  on remplit simplement un tableau NumPy pré-alloué. C'est le gain principal. La version pandas est
+  conservée comme référence lisible, et un test vérifie que les deux sont identiques.
+- **ONNX Runtime** : il divise encore le temps du modèle par deux. Il rend aussi l'API indépendante
+  des versions de scikit-learn et LightGBM utilisées à l'entraînement, ce qui élimine les problèmes
+  de compatibilité au déploiement.
+- **Changer seulement le moteur (stratégie A) n'apporte rien** tant que la préparation domine. Il
+  faut d'abord mesurer avant d'optimiser.
 - **Configuration du runtime** : `intra_op_num_threads=1`. Pour une requête unitaire, le
-  parallélisme coûte plus en synchronisation qu'il ne rapporte, et il crée de la contention quand
-  plusieurs workers uvicorn tournent sur la même machine.
-- **Quantification : écartée.** La quantification INT8 d'ONNX Runtime s'applique aux opérateurs
-  linéaires et convolutifs (MatMul, Conv), pas aux ensembles d'arbres (`TreeEnsembleClassifier`).
-  Il n'y a rien à quantifier, et passer les seuils des arbres en basse précision risquerait de
-  modifier des décisions.
-- **Scoring en masse (10 000 clients)** : sklearn 142 ms, booster natif 140 ms, ONNX 149 ms. En batch,
-  le calcul vectorisé domine et les trois moteurs se valent. **L'optimisation ne vise donc que le
-  temps réel**, qui est le besoin exprimé par « Crédit Express ».
+  parallélisme coûte plus qu'il ne rapporte, et il crée de la contention avec plusieurs workers.
+- **Quantification : écartée.** La quantification INT8 s'applique aux opérateurs linéaires et
+  convolutifs, pas aux ensembles d'arbres. Il n'y a rien à quantifier, et réduire la précision des
+  seuils des arbres risquerait de modifier des décisions.
+- **Scoring en masse (10 000 dossiers)** : ONNX 75 ms, LightGBM 80 ms. En batch, les moteurs se
+  valent. L'optimisation vise le temps réel, qui est le besoin de « Crédit Express ».
 
 ## 4. Impact sur l'API (de bout en bout, 500 requêtes HTTP)
 
 | Version | p50 | p95 | p99 |
 |---|---|---|---|
-| v1 (pandas + LightGBM) | 10,97 ms | 12,89 ms | 14,90 ms |
-| **Finale (NumPy + ONNX)** | **1,77 ms** | **2,20 ms** | **2,69 ms** |
+| v1 (préparation pandas) | 22,71 ms | 28,16 ms | 32,62 ms |
+| **Finale (NumPy + ONNX)** | **2,00 ms** | **2,40 ms** | **3,17 ms** |
 
-La latence est **divisée par 6**. Ce qui reste est surtout de l'overhead HTTP, de la validation
-Pydantic et de l'écriture du log. En production (données de monitoring après redéploiement), le
-temps d'inférence p50 est passé de **7,2 ms à 0,28 ms**.
+La latence est **divisée par 11**. Ce qui reste est surtout de l'overhead HTTP, de la validation
+Pydantic (plusieurs centaines de champs) et de l'écriture du log.
 
 ## 5. Non-régression (précision, biais)
 
-Mesurée sur 20 000 clients :
-- AUC identique : 0,7734 contre 0,7734
-- Écart maximal de score : 4,6·10⁻⁷ (conversion en float32)
-- **100 % des décisions identiques** au seuil métier
+- Écart maximal de score par rapport au modèle MLflow d'origine : 2·10⁻⁷ (conversion en float32).
+- **100 % des décisions identiques** au seuil métier, sur 1 000 dossiers du jeu de test.
+- Le modèle n'a pas changé, seul le moteur d'exécution a changé : aucun biais nouveau n'est
+  introduit.
+- Garde-fous automatiques dans la CI : les tests `test_scores_reproduce_mlflow_model`,
+  `test_fast_transform_matches_pandas` et `test_api_reproduces_notebook_scores` bloquent le
+  déploiement en cas d'écart.
 
-Le modèle n'a pas changé, seul le moteur d'exécution a changé, donc aucun biais nouveau ne peut être
-introduit. Des tests automatiques (`tests/test_model.py`) bloquent le pipeline CI/CD si :
-- les features NumPy diffèrent des features pandas ;
-- les scores ONNX s'écartent de plus de 1e-4 de ceux de LightGBM ;
-- une décision change.
-
-## 6. Configuration finale retenue et justification
+## 6. Configuration finale retenue
 
 | Élément | Choix | Justification |
 |---|---|---|
-| Moteur d'inférence | ONNX Runtime 1.29 (CPUExecutionProvider) | Le plus rapide en unitaire, portable, sans dépendance à LightGBM pour servir |
-| Features en ligne | NumPy (`build_features_fast`) | Supprime 79 % du temps d'inférence |
-| Threads ONNX | 1 par session | Meilleure latence unitaire, pas de contention |
-| Serveur | uvicorn, 1 worker par vCPU | Le modèle (environ 1 Mo) est chargé une fois par worker au démarrage (`lifespan`) |
-| Hardware | CPU seulement (2 vCPU suffisent) | Le modèle à base d'arbres ne profite pas d'un GPU ; p99 inférieur à 3 ms |
-| Image | `python:3.12-slim` + utilisateur non-root | Image légère, compatible Hugging Face Spaces |
+| Moteur | ONNX Runtime (CPUExecutionProvider) | Le plus rapide, indépendant des versions d'entraînement |
+| Préparation en ligne | NumPy, correspondance des colonnes pré-calculée | Supprime 98 % du temps |
+| Threads ONNX | 1 par session | Meilleure latence unitaire |
+| Serveur | uvicorn, 1 worker par vCPU | Modèle chargé une fois par worker (`lifespan`) |
+| Hardware | CPU seulement, 2 vCPU | Les modèles à base d'arbres ne profitent pas d'un GPU ; p99 inférieur à 4 ms |
 
 Retour arrière possible sans reconstruire l'image : `MODEL_BACKEND=lightgbm` et/ou `FAST_FEATURES=0`.
-
-*Chiffres obtenus avec Python 3.13 sur 2 vCPU x86_64. Pour les reproduire : `python -m scripts.benchmark`.*

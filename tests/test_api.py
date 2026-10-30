@@ -3,6 +3,8 @@ import sqlite3
 
 import pytest
 
+MINIMAL = {"AMT_INCOME_TOTAL": 180000, "AMT_CREDIT": 600000, "DAYS_BIRTH": -14000, "CODE_GENDER": "F"}
+
 
 def test_health(client):
     r = client.get("/health")
@@ -14,7 +16,16 @@ def test_health(client):
 def test_model_info(client):
     body = client.get("/model-info").json()
     assert 0 < body["threshold"] < 1
-    assert "AMT_CREDIT" in body["features"]
+    assert "AMT_CREDIT" in body["input_fields"]
+    assert body["n_model_columns"] >= len(body["input_fields"]) - 10
+
+
+def test_sample_clients_endpoints(client):
+    ids = client.get("/clients").json()
+    assert ids
+    rec = client.get(f"/clients/{ids[0]}").json()
+    assert "AMT_CREDIT" in rec
+    assert client.get("/clients/1").status_code == 404
 
 
 def test_predict_valid(client, valid_client):
@@ -26,25 +37,33 @@ def test_predict_valid(client, valid_client):
     assert (body["decision"] == "REFUSE") == (body["score"] >= body["threshold"])
 
 
-def test_predict_is_deterministic(client, valid_client):
-    s1 = client.post("/predict", json=valid_client).json()["score"]
-    s2 = client.post("/predict", json=valid_client).json()["score"]
-    assert s1 == s2
+def test_api_reproduces_notebook_scores(client, sample_df, sample_records):
+    """Non-régression : l'API redonne les scores du modèle MLflow d'origine."""
+    for rec, expected in list(zip(sample_records, sample_df["expected_score"]))[:50]:
+        r = client.post("/predict", json=rec)
+        assert r.status_code == 200, r.text
+        assert r.json()["score"] == pytest.approx(expected, abs=1e-4)
 
 
-def test_optional_fields_can_be_missing(client, valid_client):
-    for f in ("EXT_SOURCE_1", "EXT_SOURCE_3", "AMT_GOODS_PRICE", "DAYS_EMPLOYED"):
-        valid_client.pop(f)
-    r = client.post("/predict", json=valid_client)
+def test_minimal_file_without_history(client):
+    """Client sans aucun historique (cœur de cible) : seuls les champs obligatoires."""
+    r = client.post("/predict", json=MINIMAL)
     assert r.status_code == 200
 
 
+def test_unemployed_sentinel_is_accepted(client, valid_client):
+    valid_client["DAYS_EMPLOYED"] = 365243  # code « sans emploi » du jeu Home Credit
+    assert client.post("/predict", json=valid_client).status_code == 200
+
+
 # ----- Cas critiques demandés : données manquantes, hors plage, mauvais types
-@pytest.mark.parametrize("field", ["AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY",
-                                   "DAYS_BIRTH", "CODE_GENDER", "NAME_EDUCATION_TYPE"])
-def test_missing_required_field(client, valid_client, field):
-    valid_client.pop(field)
-    assert client.post("/predict", json=valid_client).status_code == 422
+@pytest.mark.parametrize("field", ["AMT_INCOME_TOTAL", "AMT_CREDIT", "DAYS_BIRTH", "CODE_GENDER"])
+def test_missing_required_field(client, field):
+    body = dict(MINIMAL)
+    body.pop(field)
+    r = client.post("/predict", json=body)
+    assert r.status_code == 422
+    assert field in r.text
 
 
 @pytest.mark.parametrize("field,value", [
@@ -55,7 +74,7 @@ def test_missing_required_field(client, valid_client, field):
     ("DAYS_BIRTH", -3000),            # mineur (8 ans)
     ("EXT_SOURCE_2", 1.5),            # score externe > 1
     ("CNT_CHILDREN", -1),
-    ("DAYS_EMPLOYED", 365243),        # anomalie connue du jeu Home Credit
+    ("DAYS_EMPLOYED", 500),           # date d'embauche dans le futur
 ])
 def test_out_of_range(client, valid_client, field, value):
     valid_client[field] = value
@@ -66,8 +85,8 @@ def test_out_of_range(client, valid_client, field, value):
     ("AMT_CREDIT", "beaucoup"),
     ("DAYS_BIRTH", "trente ans"),
     ("EXT_SOURCE_1", [0.5]),
-    ("CODE_GENDER", "X"),
-    ("NAME_EDUCATION_TYPE", "PhD"),
+    ("CODE_GENDER", "X"),             # catégorie inconnue
+    ("NAME_CONTRACT_TYPE", "Leasing"),
 ])
 def test_wrong_type_or_category(client, valid_client, field, value):
     valid_client[field] = value
@@ -75,7 +94,12 @@ def test_wrong_type_or_category(client, valid_client, field, value):
 
 
 def test_unknown_field_rejected(client, valid_client):
-    valid_client["SK_ID_CURR"] = 100002
+    valid_client["SK_ID_CURR"] = 100002          # identifiant : refusé (RGPD)
+    assert client.post("/predict", json=valid_client).status_code == 422
+
+
+def test_derived_field_rejected(client, valid_client):
+    valid_client["DAYS_EMPLOYED_ANOM"] = 1        # calculé par l'API, pas par l'appelant
     assert client.post("/predict", json=valid_client).status_code == 422
 
 
@@ -102,6 +126,7 @@ def test_predictions_are_stored(client, valid_client):
 
 def test_internal_error_returns_500_without_leaking(client, valid_client, monkeypatch):
     import app.main as m
+
     def boom(_):
         raise RuntimeError("secret stack detail")
     monkeypatch.setattr(m.STATE["model"], "predict_one", boom)
@@ -110,11 +135,14 @@ def test_internal_error_returns_500_without_leaking(client, valid_client, monkey
     assert "secret" not in r.text
 
 
-def test_gradio_predict_function(client):
+def test_gradio_functions(client):
     import app.main as m
-    from app.ui import make_predict_fn
-    run = make_predict_fn(m.score_client)
-    md, probs = run(0.5, 0.6, 0.5, 180000, 600000, 28000, 540000, 38, 7, 1, "F", "Higher education")
+    from app.ui import make_load_fn, make_predict_fn
+    clients = m.STATE["clients"]
+    sk = sorted(clients)[0]
+    values = make_load_fn(clients)(sk)
+    md, probs = make_predict_fn(m.score_client, clients)(sk, *values)
     assert "Crédit" in md and abs(sum(probs.values()) - 1) < 1e-9
-    md, probs = run(0.5, 0.6, 0.5, -5, 600000, 28000, 540000, 38, 7, 1, "F", "Higher education")
+    values[3] = -5  # revenu négatif
+    md, probs = make_predict_fn(m.score_client, clients)(sk, *values)
     assert "invalides" in md and probs is None

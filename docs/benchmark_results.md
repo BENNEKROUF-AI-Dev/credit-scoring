@@ -1,49 +1,47 @@
+Modèle : LGBMClassifier, 63 colonnes
+
 ## Inférence unitaire (1 client, 1000 appels)
 
 | Configuration | p50 (ms) | p95 (ms) | p99 (ms) | Gain p50 |
 |---|---|---|---|---|
-| v1 — pandas + sklearn predict_proba | 7.684 | 11.004 | 11.543 | ×1.0 |
-| pandas + booster LightGBM natif | 6.582 | 9.869 | 11.222 | ×1.2 |
-| pandas + ONNX Runtime | 5.816 | 9.071 | 9.866 | ×1.3 |
-| NumPy + booster LightGBM natif | 0.113 | 0.226 | 0.274 | ×68.3 |
-| final — NumPy + ONNX Runtime | 0.072 | 0.136 | 0.174 | ×106.2 |
+| v1 — préparation pandas + booster LightGBM natif | 15.624 | 24.345 | 27.182 | ×1.0 |
+| préparation pandas + ONNX Runtime | 15.972 | 24.479 | 28.289 | ×1.0 |
+| préparation NumPy + booster LightGBM natif | 0.064 | 0.142 | 0.388 | ×245.6 |
+| final — préparation NumPy + ONNX Runtime | 0.035 | 0.052 | 0.064 | ×442.5 |
 
 ## Décomposition du temps (p50, ms)
 
 | Étape | p50 (ms) |
 |---|---|
-| features pandas | 6.4125 |
-| features NumPy | 0.0545 |
-| modèle sklearn predict_proba (DataFrame 1 ligne) | 1.4821 |
-| modèle booster natif | 0.0499 |
-| modèle ONNX Runtime | 0.0300 |
+| préparation pandas (get_dummies…) | 14.8163 |
+| préparation NumPy | 0.0146 |
+| modèle ONNX Runtime | 0.0185 |
+| modèle booster LightGBM natif | 0.0359 |
 
 ## Latence API de bout en bout (500 requêtes HTTP)
 
 | Version | p50 (ms) | p95 (ms) | p99 (ms) |
 |---|---|---|---|
-| v1 (pandas + LightGBM) | 10.97 | 12.89 | 14.90 |
-| final (NumPy + ONNX) | 1.77 | 2.20 | 2.69 |
+| v1 (préparation pandas) | 22.71 | 28.16 | 32.62 |
+| final (NumPy + ONNX) | 2.00 | 2.40 | 3.17 |
 
-## Scoring en masse (10 000 clients)
+## Scoring en masse (10000 clients déjà encodés)
 
 | Moteur | ms |
 |---|---|
-| sklearn | 142.3 |
-| booster natif | 139.7 |
-| ONNX Runtime (1 thread) | 148.8 |
+| ONNX Runtime (1 thread) | 74.8 |
+| booster LightGBM natif | 79.8 |
 
-## Non-régression
+## Non-régression (vs modèle MLflow d'origine)
 
-- AUC sklearn : 0.7734 — AUC version finale : 0.7734
-- Écart max de score : 4.56e-07
-- Décisions identiques : 100.00%
+- Écart max de score : 2.16e-07
+- Décisions identiques : 100.00% (1000 dossiers)
 
 ## Chargement et taille
 
-- LightGBM (joblib) : chargement 7 ms
-- ONNX : chargement 22 ms
-- model.joblib : 1.39 Mo
-- model.onnx : 0.92 Mo
+- ONNX : chargement 9 ms
+- LightGBM : chargement 12 ms
+- model.onnx : 0.45 Mo
+- model.txt : 0.70 Mo
 
 Environnement : Python 3.13.18, 2 vCPU (x86_64)

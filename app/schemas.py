@@ -1,74 +1,100 @@
-"""Schémas Pydantic : validation stricte des entrées de l'API.
+"""Validation des entrées de l'API.
 
-- champs obligatoires manquants  -> 422
-- valeurs hors plage              -> 422
-- mauvais type (texte au lieu d'un nombre) -> 422
+Le schéma est construit automatiquement à partir de model/model_meta.json : chaque
+variable du dossier client (format du notebook 1) devient un champ, avec :
+- variables texte    -> valeurs autorisées = catégories vues à l'entraînement
+- variables numériques -> nombre fini (texte, NaN, infini refusés)
+- variables clés     -> règles métier (plages) ci-dessous ; certaines obligatoires
+- tout champ inconnu -> refusé (faute de frappe, identifiant, injection)
+- variables dérivées (DAYS_EMPLOYED_ANOM, *_MISSING…) -> calculées par l'API, refusées en entrée
+
+Tout manquement renvoie une erreur 422 détaillée.
 """
 from __future__ import annotations
 
+import json
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
-Education = Literal[
-    "Lower secondary",
-    "Secondary / secondary special",
-    "Incomplete higher",
-    "Higher education",
-    "Academic degree",
-]
+from app import config
+from app.preprocessing import ANOMALY_DAYS_EMPLOYED, Preprocessor
+
+# Règles métier : (contraintes, obligatoire ?). Ignorées si la variable n'existe pas.
+RULES: dict[str, tuple[dict, bool]] = {
+    "AMT_INCOME_TOTAL": ({"gt": 0, "le": 1e9}, True),
+    "AMT_CREDIT": ({"gt": 0, "le": 1e9}, True),
+    "DAYS_BIRTH": ({"ge": -36500, "le": -6570}, True),   # entre 18 et 100 ans
+    "AMT_ANNUITY": ({"gt": 0, "le": 1e8}, False),
+    "AMT_GOODS_PRICE": ({"gt": 0, "le": 1e9}, False),
+    "EXT_SOURCE_1": ({"ge": 0, "le": 1}, False),
+    "EXT_SOURCE_2": ({"ge": 0, "le": 1}, False),
+    "EXT_SOURCE_3": ({"ge": 0, "le": 1}, False),
+    "CNT_CHILDREN": ({"ge": 0, "le": 20}, False),
+    "CNT_FAM_MEMBERS": ({"ge": 1, "le": 25}, False),
+    "OWN_CAR_AGE": ({"ge": 0, "le": 100}, False),
+    "DAYS_EMPLOYED": ({"ge": -36500, "le": ANOMALY_DAYS_EMPLOYED}, False),
+    "DAYS_REGISTRATION": ({"ge": -36500, "le": 0}, False),
+    "DAYS_ID_PUBLISH": ({"ge": -36500, "le": 0}, False),
+}
+REQUIRED_CATEGORICAL = ["CODE_GENDER"]
 
 
-class ClientData(BaseModel):
-    """Données d'un client. Conventions Home Credit : DAYS_* sont négatifs
-    (nombre de jours avant la demande)."""
-
-    model_config = ConfigDict(
-        extra="forbid",  # refuse les champs inconnus (faute de frappe, injection)
-        json_schema_extra={
-            "example": {
-                "EXT_SOURCE_1": 0.45,
-                "EXT_SOURCE_2": 0.62,
-                "EXT_SOURCE_3": 0.51,
-                "AMT_INCOME_TOTAL": 180000,
-                "AMT_CREDIT": 600000,
-                "AMT_ANNUITY": 28000,
-                "AMT_GOODS_PRICE": 540000,
-                "DAYS_BIRTH": -14000,
-                "DAYS_EMPLOYED": -2500,
-                "CNT_CHILDREN": 1,
-                "CODE_GENDER": "F",
-                "NAME_EDUCATION_TYPE": "Higher education",
-            }
-        },
-    )
-
-    # Scores externes : optionnels (souvent manquants dans Home Credit)
-    EXT_SOURCE_1: Optional[float] = Field(None, ge=0, le=1)
-    EXT_SOURCE_2: Optional[float] = Field(None, ge=0, le=1)
-    EXT_SOURCE_3: Optional[float] = Field(None, ge=0, le=1)
-
-    # Montants : obligatoires et strictement positifs
-    AMT_INCOME_TOTAL: float = Field(..., gt=0, le=1e8, description="Revenu annuel")
-    AMT_CREDIT: float = Field(..., gt=0, le=1e8, description="Montant du crédit")
-    AMT_ANNUITY: float = Field(..., gt=0, le=1e7, description="Annuité")
-    AMT_GOODS_PRICE: Optional[float] = Field(None, gt=0, le=1e8)
-
-    # Âge entre 18 et 100 ans ; ancienneté d'emploi <= 0 (ou inconnue)
-    DAYS_BIRTH: int = Field(..., ge=-36500, le=-6570, description="Âge en jours (négatif)")
-    DAYS_EMPLOYED: Optional[int] = Field(None, ge=-36500, le=0)
-    CNT_CHILDREN: int = Field(0, ge=0, le=20)
-
-    CODE_GENDER: Literal["M", "F"]
-    NAME_EDUCATION_TYPE: Education
+class _ClientBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=False)
 
     @model_validator(mode="after")
     def check_consistency(self):
-        if self.AMT_ANNUITY > self.AMT_CREDIT:
+        d = self.model_dump(by_alias=True)
+        annuity, credit = d.get("AMT_ANNUITY"), d.get("AMT_CREDIT")
+        if annuity is not None and credit is not None and annuity > credit:
             raise ValueError("AMT_ANNUITY ne peut pas dépasser AMT_CREDIT")
-        if self.DAYS_EMPLOYED is not None and self.DAYS_EMPLOYED < self.DAYS_BIRTH:
-            raise ValueError("DAYS_EMPLOYED ne peut pas précéder la naissance")
+        emp, birth = d.get("DAYS_EMPLOYED"), d.get("DAYS_BIRTH")
+        if emp is not None and emp != ANOMALY_DAYS_EMPLOYED:
+            if emp > 0:
+                raise ValueError(f"DAYS_EMPLOYED doit être <= 0 (ou {ANOMALY_DAYS_EMPLOYED} = sans emploi)")
+            if birth is not None and emp < birth:
+                raise ValueError("DAYS_EMPLOYED ne peut pas précéder la naissance")
         return self
+
+    def to_record(self) -> dict:
+        """Dossier avec les noms d'origine, sans les champs non renseignés."""
+        return self.model_dump(by_alias=True, exclude_none=True)
+
+
+def _example(meta_dir) -> dict | None:
+    try:
+        df = pd.read_parquet(meta_dir / "sample_clients.parquet").drop(
+            columns=["SK_ID_CURR", "expected_score"], errors="ignore")
+        row = df.iloc[0].to_dict()
+        return {k: (v.item() if hasattr(v, "item") else v) for k, v in row.items() if pd.notna(v)}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def build_client_model(meta: dict) -> type[BaseModel]:
+    prep = Preprocessor(meta)
+    fields = {}
+    for i, col in enumerate(prep.input_columns):
+        if col in prep.categorical:
+            typ = Literal[tuple(prep.categorical[col])] if prep.categorical[col] else str
+            required = col in REQUIRED_CATEGORICAL
+            fields[f"f{i}"] = ((typ if required else Optional[typ]),
+                               Field(... if required else None, alias=col))
+        else:
+            rule, required = RULES.get(col, ({}, False))
+            fields[f"f{i}"] = ((float if required else Optional[float]),
+                               Field(... if required else None, alias=col, allow_inf_nan=False, **rule))
+    model = create_model("ClientData", __base__=_ClientBase, **fields)
+    example = _example(config.MODEL_DIR)
+    if example:
+        model.model_config["json_schema_extra"] = {"example": example}
+        model.model_rebuild(force=True)
+    return model
+
+
+ClientData = build_client_model(json.loads(config.MODEL_META_PATH.read_text()))
 
 
 class PredictionResponse(BaseModel):

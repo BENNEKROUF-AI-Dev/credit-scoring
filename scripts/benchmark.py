@@ -16,23 +16,21 @@ import pstats
 import time
 from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score
 
-from app.features import MODEL_FEATURES, build_features, build_features_fast
 from app.model import ScoringModel
-from scripts.synthetic import generate_clients
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
-N_SINGLE, N_WARMUP = 1000, 50
+N_WARMUP = 50
 
 
-def clean(records):
-    return [{k: (None if isinstance(v, float) and np.isnan(v) else v) for k, v in r.items()}
-            for r in records]
+def load_records():
+    df = pd.read_parquet(ROOT / "model" / "sample_clients.parquet")
+    recs = [{k: (v.item() if hasattr(v, "item") else v) for k, v in r.items() if pd.notna(v)}
+            for r in df.drop(columns=["SK_ID_CURR", "expected_score"]).to_dict("records")]
+    return recs, df["expected_score"].to_numpy()
 
 
 def timeit(fn, inputs):
@@ -60,61 +58,55 @@ def profile(fn, inputs, path):
 
 
 def main():
-    data = generate_clients(N_SINGLE, seed=99)
-    records = clean(data.to_dict("records"))
-    sk_model = joblib.load(ROOT / "model" / "model.joblib")
-    lgb = ScoringModel(backend="lightgbm")
+    records, expected = load_records()
     onx = ScoringModel(backend="onnx")
+    lgb = ScoringModel(backend="lightgbm")
+    has_lgb = lgb.backend == "lightgbm"
+    prep = onx.preprocessor
+    native = lgb if has_lgb else onx
+    native_name = "booster LightGBM natif" if has_lgb else "ONNX Runtime"
 
     configs = {
-        "v1 — pandas + sklearn predict_proba": lambda r: sk_model.predict_proba(
-            build_features(pd.DataFrame([r])))[0, 1],
-        "pandas + booster LightGBM natif": lambda r: lgb._predict_array(
-            build_features(pd.DataFrame([r])).to_numpy()),
-        "pandas + ONNX Runtime": lambda r: onx._predict_array(
-            build_features(pd.DataFrame([r])).to_numpy()),
-        "NumPy + booster LightGBM natif": lambda r: lgb._predict_array(build_features_fast([r])),
-        "final — NumPy + ONNX Runtime": lambda r: onx._predict_array(build_features_fast([r])),
+        f"v1 — préparation pandas + {native_name}":
+            lambda r: native.predict_array(prep.transform_pandas([r]).to_numpy(np.float64)),
+        "préparation pandas + ONNX Runtime":
+            lambda r: onx.predict_array(prep.transform_pandas([r]).to_numpy(np.float64)),
+        f"préparation NumPy + {native_name}":
+            lambda r: native.predict_array(prep.transform([r])),
+        "final — préparation NumPy + ONNX Runtime":
+            lambda r: onx.predict_array(prep.transform([r])),
     }
     single = {name: timeit(fn, records) for name, fn in configs.items()}
 
-    # Décomposition : feature engineering vs modèle seul
-    X1 = [build_features_fast([r]) for r in records]
+    X1 = [prep.transform([r]) for r in records]
     breakdown = {
-        "features pandas": timeit(lambda r: build_features(pd.DataFrame([r])), records),
-        "features NumPy": timeit(lambda r: build_features_fast([r]), records),
-        "modèle sklearn predict_proba (DataFrame 1 ligne)": timeit(
-            lambda x: sk_model.predict_proba(pd.DataFrame(x, columns=MODEL_FEATURES)), X1),
-        "modèle booster natif": timeit(lgb._predict_array, X1),
-        "modèle ONNX Runtime": timeit(onx._predict_array, X1),
+        "préparation pandas (get_dummies…)": timeit(lambda r: prep.transform_pandas([r]), records),
+        "préparation NumPy": timeit(lambda r: prep.transform([r]), records),
+        "modèle ONNX Runtime": timeit(onx.predict_array, X1),
     }
+    if has_lgb:
+        breakdown["modèle booster LightGBM natif"] = timeit(lgb.predict_array, X1)
 
-    # Batch (scoring de masse, 10 000 clients)
-    big = generate_clients(10000, seed=5)
-    Xb = build_features(big).to_numpy()
+    Xb = prep.transform(records * 10)
     batch = {}
-    for name, fn in {"sklearn": lambda: sk_model.predict_proba(pd.DataFrame(Xb, columns=MODEL_FEATURES)),
-                     "booster natif": lambda: lgb._predict_array(Xb),
-                     "ONNX Runtime (1 thread)": lambda: onx._predict_array(Xb)}.items():
+    engines = {"ONNX Runtime (1 thread)": lambda: onx.predict_array(Xb)}
+    if has_lgb:
+        engines["booster LightGBM natif"] = lambda: lgb.predict_array(Xb)
+    for name, fn in engines.items():
         fn()
         t0 = time.perf_counter()
         for _ in range(5):
             fn()
-        batch[name] = {"ms_per_10k": (time.perf_counter() - t0) / 5 * 1000}
+        batch[name] = {"ms": (time.perf_counter() - t0) / 5 * 1000, "n": len(Xb)}
 
-    # Non-régression : précision identique ?
-    labelled = generate_clients(20000, seed=11, with_target=True)
-    p_ref = sk_model.predict_proba(build_features(labelled))[:, 1]
-    p_onx = onx._predict_array(build_features_fast(clean(labelled.drop(columns="TARGET").to_dict("records"))))
+    p_final = onx.predict_records(records)
     t = onx.threshold
     quality = {
-        "auc_sklearn": roc_auc_score(labelled["TARGET"], p_ref),
-        "auc_final": roc_auc_score(labelled["TARGET"], p_onx),
-        "max_abs_score_diff": float(np.max(np.abs(p_ref - p_onx))),
-        "decision_agreement": float(((p_ref >= t) == (p_onx >= t)).mean()),
+        "max_abs_score_diff_vs_mlflow": float(np.max(np.abs(p_final - expected))),
+        "decision_agreement": float(((p_final >= t) == (expected >= t)).mean()),
+        "n": len(records),
     }
 
-    # Latence de bout en bout via l'API (FastAPI TestClient)
     os.environ["ENABLE_PREDICTION_LOGGING"] = "0"
     os.environ["ENABLE_UI"] = "0"
     import importlib
@@ -123,33 +115,38 @@ def main():
     import app.main as main_mod
     importlib.reload(main_mod)
     from fastapi.testclient import TestClient
-    payloads = [{k: v for k, v in r.items() if v is not None} for r in records[:500]]
     api = {}
     with TestClient(main_mod.app) as c:
-        for name, model in {"v1 (pandas + LightGBM)": ScoringModel(backend="lightgbm", fast_features=False),
-                            "final (NumPy + ONNX)": ScoringModel(backend="onnx", fast_features=True)}.items():
+        versions = {
+            "v1 (préparation pandas)": ScoringModel(backend="lightgbm" if has_lgb else "onnx",
+                                                    fast_features=False),
+            "final (NumPy + ONNX)": ScoringModel(backend="onnx", fast_features=True),
+        }
+        for name, model in versions.items():
             main_mod.STATE["model"] = model
-            api[name] = timeit(lambda b: c.post("/predict", json=b), payloads)
+            api[name] = timeit(lambda b: c.post("/predict", json=b), records[:500])
 
-    # Temps de chargement et taille
     load = {}
-    for name, kw in {"LightGBM (joblib)": {"backend": "lightgbm"}, "ONNX": {"backend": "onnx"}}.items():
+    for name, kw in {"ONNX": {"backend": "onnx"}, **({"LightGBM": {"backend": "lightgbm"}} if has_lgb else {})}.items():
         t0 = time.perf_counter()
         ScoringModel(**kw)
         load[name] = (time.perf_counter() - t0) * 1000
-    sizes = {f: (ROOT / "model" / f).stat().st_size / 1e6 for f in ("model.joblib", "model.onnx")}
+    sizes = {f: (ROOT / "model" / f).stat().st_size / 1e6
+             for f in ("model.onnx", "model.txt") if (ROOT / "model" / f).exists()}
 
-    profile(configs["v1 — pandas + sklearn predict_proba"], records, DOCS / "profiling_v1.txt")
-    profile(configs["final — NumPy + ONNX Runtime"], records, DOCS / "profiling_final.txt")
+    profile(configs[next(iter(configs))], records, DOCS / "profiling_v1.txt")
+    profile(configs["final — préparation NumPy + ONNX Runtime"], records, DOCS / "profiling_final.txt")
 
     env = {"python": platform.python_version(), "cpu": platform.processor() or platform.machine(),
-           "cpu_count": os.cpu_count()}
+           "cpu_count": os.cpu_count(), "algorithm": onx.meta.get("algorithm"),
+           "n_model_columns": len(prep.model_columns)}
     results = {"env": env, "single": single, "breakdown": breakdown, "batch": batch,
                "quality": quality, "api": api, "load_ms": load, "size_mb": sizes}
     (DOCS / "benchmark_results.json").write_text(json.dumps(results, indent=2, default=float))
 
-    base = single["v1 — pandas + sklearn predict_proba"]["p50_ms"]
-    lines = ["## Inférence unitaire (1 client, 1000 appels)", "",
+    base = single[next(iter(single))]["p50_ms"]
+    lines = [f"Modèle : {env['algorithm']}, {env['n_model_columns']} colonnes", "",
+             f"## Inférence unitaire (1 client, {len(records)} appels)", "",
              "| Configuration | p50 (ms) | p95 (ms) | p99 (ms) | Gain p50 |", "|---|---|---|---|---|"]
     for n, r in single.items():
         lines.append(f"| {n} | {r['p50_ms']:.3f} | {r['p95_ms']:.3f} | {r['p99_ms']:.3f} | ×{base / r['p50_ms']:.1f} |")
@@ -158,12 +155,11 @@ def main():
     lines += ["", "## Latence API de bout en bout (500 requêtes HTTP)", "",
               "| Version | p50 (ms) | p95 (ms) | p99 (ms) |", "|---|---|---|---|"]
     lines += [f"| {n} | {r['p50_ms']:.2f} | {r['p95_ms']:.2f} | {r['p99_ms']:.2f} |" for n, r in api.items()]
-    lines += ["", "## Scoring en masse (10 000 clients)", "", "| Moteur | ms |", "|---|---|"]
-    lines += [f"| {n} | {r['ms_per_10k']:.1f} |" for n, r in batch.items()]
-    lines += ["", "## Non-régression", "",
-              f"- AUC sklearn : {quality['auc_sklearn']:.4f} — AUC version finale : {quality['auc_final']:.4f}",
-              f"- Écart max de score : {quality['max_abs_score_diff']:.2e}",
-              f"- Décisions identiques : {quality['decision_agreement']:.2%}",
+    lines += ["", f"## Scoring en masse ({len(Xb)} clients déjà encodés)", "", "| Moteur | ms |", "|---|---|"]
+    lines += [f"| {n} | {r['ms']:.1f} |" for n, r in batch.items()]
+    lines += ["", "## Non-régression (vs modèle MLflow d'origine)", "",
+              f"- Écart max de score : {quality['max_abs_score_diff_vs_mlflow']:.2e}",
+              f"- Décisions identiques : {quality['decision_agreement']:.2%} ({quality['n']} dossiers)",
               "", "## Chargement et taille", ""]
     lines += [f"- {n} : chargement {v:.0f} ms" for n, v in load.items()]
     lines += [f"- {n} : {v:.2f} Mo" for n, v in sizes.items()]

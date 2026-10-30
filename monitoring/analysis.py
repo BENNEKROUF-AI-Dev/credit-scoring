@@ -3,6 +3,7 @@ Fonctions partagées par le script d'analyse automatique et le dashboard Streaml
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -11,8 +12,11 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "data" / "predictions.db"
-REFERENCE = ROOT / "model" / "reference_data.parquet"
-CATEGORICAL = ["CODE_GENDER", "NAME_EDUCATION_TYPE"]
+MODEL_DIR = Path(os.getenv("MODEL_DIR", ROOT / "model"))
+REFERENCE = MODEL_DIR / "reference_data.parquet"
+META = json.loads((MODEL_DIR / "model_meta.json").read_text())
+CATEGORICAL = list(META["raw_categorical"])            # variables texte
+MONITORED = META.get("monitored_features", [])          # variables surveillées (les plus importantes)
 
 # Seuils d'alerte (à ajuster avec le métier)
 ALERTS = {
@@ -34,8 +38,8 @@ def load_logs(db_path: Path | str = DEFAULT_DB) -> pd.DataFrame:
 def expand_inputs(logs: pd.DataFrame) -> pd.DataFrame:
     """Données d'entrée + score des requêtes réussies, au format de la référence."""
     ok = logs[logs["status_code"] == 200].copy()
-    inputs = pd.json_normalize(ok["inputs"].map(json.loads).tolist())
-    inputs.index = ok.index
+    inputs = pd.DataFrame(ok["inputs"].map(json.loads).tolist(), index=ok.index)
+    inputs = inputs.reindex(columns=MONITORED)  # absent = information manquante
     inputs["score"] = ok["score"]
     inputs["timestamp"] = ok["timestamp"]
     return inputs

@@ -121,7 +121,8 @@ with tab_perf:
 # ----------------------------------------------------------------- Drift
 with tab_drift:
     features = [c for c in reference.columns if c != "score"]
-    feat = st.selectbox("Variable", features, index=features.index("EXT_SOURCE_3"))
+    feat = st.selectbox("Variable", features,
+                        index=features.index("EXT_SOURCE_3") if "EXT_SOURCE_3" in features else 0)
     if feat in CATEGORICAL:
         r = reference[feat].value_counts(normalize=True).rename("Référence")
         p = current[feat].value_counts(normalize=True).rename("Production")
@@ -135,7 +136,7 @@ with tab_drift:
         fig.add_histogram(x=current[feat], name="Production", histnorm="probability",
                           marker_color=PROD_COLOR, opacity=0.6, nbinsx=40)
         fig.update_layout(barmode="overlay")
-        st.caption(f"PSI {feat} : {psi(reference[feat].to_numpy(float), current[feat].to_numpy(float)):.3f} "
+        st.caption(f"PSI {feat} : {psi(pd.to_numeric(reference[feat]).to_numpy(float), pd.to_numeric(current[feat]).to_numpy(float)):.3f} "
                    f"| valeurs manquantes réf. {reference[feat].isna().mean():.1%} / prod. "
                    f"{current[feat].isna().mean():.1%}")
     fig.update_layout(title=f"{feat} : référence vs production")

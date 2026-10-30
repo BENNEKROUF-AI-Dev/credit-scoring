@@ -1,78 +1,85 @@
-"""Tests unitaires du modèle et du feature engineering."""
+"""Tests unitaires de la préparation des données et du modèle."""
 import numpy as np
-import pandas as pd
 import pytest
 
-from app.features import MODEL_FEATURES, build_features, build_features_fast
 from app.model import ScoringModel
-from scripts.synthetic import generate_clients
+from app.preprocessing import DERIVED, derive, noms_propres, underive
 
 
 @pytest.fixture(scope="module")
-def sample():
-    return generate_clients(500, seed=1)
+def model():
+    return ScoringModel(backend="onnx")
 
 
-def test_build_features_shape_and_order(sample):
-    X = build_features(sample)
-    assert list(X.columns) == MODEL_FEATURES
-    assert len(X) == len(sample)
-    assert not np.isinf(X.to_numpy()).any()
+def test_noms_propres_like_notebook():
+    assert noms_propres(["ORGANIZATION_TYPE_Trade: type 7", "a b", "a-b", "1X"]) == \
+        ["ORGANIZATION_TYPE_Trade_type_7", "a_b", "a_b_1", "c_1X"]
 
 
-def test_build_features_ratios(valid_client):
-    X = build_features(pd.DataFrame([valid_client]))
-    assert X["CREDIT_INCOME_PERCENT"].iloc[0] == pytest.approx(600000 / 180000)
-    assert X["GENDER_M"].iloc[0] == 0.0
-    assert X["EDUCATION_ORD"].iloc[0] == 3.0
+def test_derive_recomputes_notebook1_flags():
+    raw = {"DAYS_EMPLOYED": 365243, "EXT_SOURCE_1": None, "EXT_SOURCE_2": 0.5}
+    cols = {"DAYS_EMPLOYED_ANOM", "EXT_SOURCE_1_MISSING", "EXT_SOURCE_2_MISSING", "EXT_SOURCE_3_MISSING",
+            "OWN_CAR_AGE", "BUREAU_MISSING", "CC_MISSING"}
+    r = derive(raw, cols)
+    assert r["DAYS_EMPLOYED_ANOM"] == 1 and r["DAYS_EMPLOYED"] is None
+    assert r["EXT_SOURCE_1_MISSING"] == 1 and r["EXT_SOURCE_2_MISSING"] == 0
+    assert r["OWN_CAR_AGE"] == -1
+    assert r["BUREAU_MISSING"] == 1 and r["BUREAU_COUNT"] == 0
+    assert r["CC_MISSING"] == 1
 
 
-def test_fast_features_match_pandas(sample):
-    """L'optimisation NumPy doit reproduire exactement le feature engineering pandas."""
-    records = [{k: (None if isinstance(v, float) and np.isnan(v) else v) for k, v in r.items()}
-               for r in sample.to_dict("records")]
-    fast = build_features_fast(records, dtype=np.float64)
-    ref = build_features(sample).to_numpy(np.float64)
+def test_underive_is_inverse_of_derive(model, sample_records):
+    cols = model.preprocessor.raw_columns
+    for rec in sample_records[:50]:
+        back = {k: v for k, v in underive(derive(rec, cols)).items() if v is not None}
+        assert back == rec
+
+
+def test_derived_fields_not_in_inputs(model):
+    assert not set(DERIVED) & set(model.preprocessor.input_columns)
+
+
+def test_fast_transform_matches_pandas(model, sample_records):
+    """L'encodage NumPy optimisé == l'encodage pandas calqué sur le notebook 2."""
+    prep = model.preprocessor
+    fast = prep.transform(sample_records, dtype=np.float64)
+    ref = prep.transform_pandas(sample_records).to_numpy(dtype=np.float64)
     np.testing.assert_allclose(fast, ref, rtol=1e-12, equal_nan=True)
 
 
-def test_predict_one_fast_equals_slow(valid_client):
-    fast = ScoringModel(backend="lightgbm", fast_features=True).predict_one(valid_client)[0]
-    slow = ScoringModel(backend="lightgbm", fast_features=False).predict_one(valid_client)[0]
-    assert fast == pytest.approx(slow, abs=1e-9)
+def test_unknown_category_encoded_as_all_zero(model, sample_records):
+    prep = model.preprocessor
+    if not prep.categorical:
+        pytest.skip("pas de variable texte")
+    col = next(iter(prep.categorical))
+    rec = dict(sample_records[0], **{col: "__inconnue__"})
+    X = prep.transform([rec], dtype=np.float64)[0]
+    assert all(X[j] == 0 for j in prep._cat_idx[col].values())
 
 
-@pytest.mark.parametrize("backend", ["lightgbm", "onnx"])
-def test_scores_are_probabilities(backend, sample):
-    m = ScoringModel(backend=backend)
-    p = m.predict_proba(sample)
-    assert p.shape == (len(sample),)
-    assert ((p >= 0) & (p <= 1)).all()
+def test_scores_reproduce_mlflow_model(model, sample_df, sample_records):
+    p = model.predict_records(sample_records)
+    assert np.max(np.abs(p - sample_df["expected_score"].to_numpy())) < 1e-4
+    t = model.threshold
+    exp = sample_df["expected_score"].to_numpy()
+    far = np.abs(exp - t) > 1e-4
+    assert ((p[far] >= t) == (exp[far] >= t)).all()
 
 
-def test_onnx_matches_lightgbm(sample):
-    """Non-régression de l'optimisation : ONNX doit donner les mêmes scores."""
-    ref = ScoringModel(backend="lightgbm").predict_proba(sample)
+def test_onnx_matches_lightgbm(sample_records):
+    lgb = ScoringModel(backend="lightgbm")
+    if lgb.backend != "lightgbm":
+        pytest.skip("model.txt absent (modèle non LightGBM)")
     onx = ScoringModel(backend="onnx")
-    if onx.backend != "onnx":
-        pytest.skip("model.onnx absent")
-    p = onx.predict_proba(sample)
-    assert np.max(np.abs(ref - p)) < 1e-4
-    # aucune décision ne doit changer (hors cas à 1e-4 du seuil)
-    t = onx.threshold
-    far = np.abs(ref - t) > 1e-4
-    assert ((ref[far] >= t) == (p[far] >= t)).all()
+    assert np.max(np.abs(lgb.predict_records(sample_records) - onx.predict_records(sample_records))) < 1e-4
 
 
-def test_decision_threshold():
-    m = ScoringModel(backend="lightgbm")
-    assert m.decide(m.threshold) == "REFUSE"
-    assert m.decide(m.threshold - 0.01) == "ACCORDE"
+def test_pandas_path_equals_fast_path(sample_records):
+    fast = ScoringModel(backend="onnx", fast_features=True).predict_one(sample_records[0])[0]
+    slow = ScoringModel(backend="onnx", fast_features=False).predict_one(sample_records[0])[0]
+    assert fast == pytest.approx(slow, abs=1e-6)
 
 
-def test_model_discriminates():
-    """Garde-fou qualité : l'AUC sur données fraîches doit rester correcte."""
-    from sklearn.metrics import roc_auc_score
-    df = generate_clients(4000, seed=7, with_target=True)
-    p = ScoringModel(backend="lightgbm").predict_proba(df)
-    assert roc_auc_score(df["TARGET"], p) > 0.70
+def test_decision_threshold(model):
+    assert model.decide(model.threshold) == "REFUSE"
+    assert model.decide(model.threshold - 0.01) == "ACCORDE"

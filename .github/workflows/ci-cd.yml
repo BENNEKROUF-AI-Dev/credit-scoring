@@ -43,10 +43,13 @@ jobs:
         run: |
           docker run -d --name api -p 7860:7860 $IMAGE_NAME:${{ github.sha }}
           for i in $(seq 1 30); do curl -fs http://localhost:7860/health && break; sleep 2; done
+          # dossier minimal (client sans historique) puis dossier complet d'exemple
           curl -fs -X POST http://localhost:7860/predict -H "Content-Type: application/json" -d '{
-            "EXT_SOURCE_2": 0.6, "AMT_INCOME_TOTAL": 180000, "AMT_CREDIT": 600000,
-            "AMT_ANNUITY": 28000, "DAYS_BIRTH": -14000, "CODE_GENDER": "F",
-            "NAME_EDUCATION_TYPE": "Higher education"}'
+            "AMT_INCOME_TOTAL": 180000, "AMT_CREDIT": 600000,
+            "DAYS_BIRTH": -14000, "CODE_GENDER": "F"}'
+          ID=$(curl -fs http://localhost:7860/clients | python3 -c "import sys,json; print(json.load(sys.stdin)[0])")
+          curl -fs http://localhost:7860/clients/$ID | curl -fs -X POST http://localhost:7860/predict \
+               -H "Content-Type: application/json" -d @-
           # une requête invalide doit renvoyer 422
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:7860/predict \
                  -H 'Content-Type: application/json' -d '{"AMT_CREDIT": "abc"}')" = "422"

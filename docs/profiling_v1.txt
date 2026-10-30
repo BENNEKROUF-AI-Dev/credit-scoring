@@ -1,23 +1,23 @@
-         5679693 function calls (5559093 primitive calls) in 5.379 seconds
+         11175618 function calls (10885913 primitive calls) in 11.586 seconds
 
    Ordered by: cumulative time
-   List reduced from 604 to 15 due to restriction <15>
+   List reduced from 611 to 15 due to restriction <15>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-      300    0.013    0.000    5.379    0.018 /home/claude/credit-scoring-mlops/scripts/benchmark.py:70(<lambda>)
-      300    0.025    0.000    4.260    0.014 /home/claude/credit-scoring-mlops/app/features.py:51(build_features)
-     3900    0.030    0.000    1.481    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4337(__getitem__)
-     2100    0.017    0.000    1.213    0.001 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4559(__setitem__)
-     2100    0.005    0.000    1.103    0.001 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4864(_set_item)
-     2100    0.020    0.000    1.049    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4848(_set_item_mgr)
-     2100    0.022    0.000    0.976    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/internals/managers.py:1544(insert)
-      900    0.011    0.000    0.857    0.001 /usr/local/lib/python3.13/site-packages/pandas/core/indexes/base.py:6288(_get_indexer_strict)
-      300    0.007    0.000    0.727    0.002 /usr/local/lib/python3.13/site-packages/lightgbm/sklearn.py:1761(predict_proba)
-      300    0.010    0.000    0.713    0.002 /usr/local/lib/python3.13/site-packages/lightgbm/sklearn.py:1219(predict)
-     1800    0.024    0.000    0.553    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/internals/managers.py:399(apply)
-     1800    0.016    0.000    0.524    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/indexes/base.py:3656(get_indexer)
-     5100    0.009    0.000    0.478    0.000 /usr/local/lib/python3.13/site-packages/pandas/_config/config.py:143(get_option)
-      300    0.004    0.000    0.459    0.002 /usr/local/lib/python3.13/site-packages/pandas/core/generic.py:7375(replace)
-     3000    0.059    0.000    0.457    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/indexes/base.py:2457(is_unique)
+      300    0.028    0.000   11.585    0.039 /home/claude/credit-scoring-mlops/scripts/benchmark.py:71(<lambda>)
+      300    0.056    0.000   11.385    0.038 /home/claude/credit-scoring-mlops/app/preprocessing.py:133(transform_pandas)
+20901/2001    0.117    0.000    4.183    0.002 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4559(__setitem__)
+      300    0.030    0.000    3.721    0.012 /usr/local/lib/python3.13/site-packages/pandas/core/reshape/encoding.py:42(get_dummies)
+      600    0.056    0.000    3.408    0.006 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4680(_setitem_array)
+    20100    0.104    0.000    3.012    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4337(__getitem__)
+    20301    0.063    0.000    2.653    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4864(_set_item)
+     2100    0.091    0.000    2.326    0.001 /usr/local/lib/python3.13/site-packages/pandas/core/reshape/encoding.py:242(_get_dummies_1d)
+    20301    0.046    0.000    2.206    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4848(_set_item_mgr)
+    18900    0.046    0.000    1.437    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/frame.py:4838(_iset_item_mgr)
+    18900    0.450    0.000    1.391    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/internals/managers.py:1280(iset)
+     2100    0.019    0.000    1.342    0.001 /usr/local/lib/python3.13/site-packages/pandas/core/arrays/categorical.py:3114(factorize_from_iterable)
+     2100    0.040    0.000    1.292    0.001 /usr/local/lib/python3.13/site-packages/pandas/core/arrays/categorical.py:387(__init__)
+     8400    0.117    0.000    1.252    0.000 /usr/local/lib/python3.13/site-packages/pandas/core/indexes/base.py:486(__new__)
+     1200    0.016    0.000    1.248    0.001 /usr/local/lib/python3.13/site-packages/pandas/core/indexes/base.py:6288(_get_indexer_strict)
 
 

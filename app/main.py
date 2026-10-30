@@ -10,6 +10,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
+import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -29,6 +30,7 @@ STATE: dict = {}
 async def lifespan(app: FastAPI):
     # Chargement UNIQUE du modèle au démarrage
     STATE["model"] = ScoringModel()
+    STATE["clients"] = load_sample_clients()
     STATE["store"] = (
         PredictionStore(config.PREDICTIONS_DB, config.PREDICTIONS_LOG)
         if config.ENABLE_PREDICTION_LOGGING else None
@@ -39,10 +41,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Prêt à Dépenser — API de scoring crédit",
-    description="Retourne la probabilité de défaut d'un client et la décision d'octroi.",
+    description="Retourne la probabilité de défaut d'un client et la décision d'octroi. "
+                "Le corps de /predict est le dossier client au format du notebook 1 "
+                "(variables de la demande + historique agrégé) ; seuls quelques champs sont "
+                "obligatoires, les autres peuvent être omis (= information manquante).",
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+def load_sample_clients() -> dict[int, dict]:
+    """Dossiers d'exemple (jeu de test du projet précédent) pour la démo."""
+    if not config.SAMPLE_CLIENTS_PATH.exists():
+        return {}
+    df = pd.read_parquet(config.SAMPLE_CLIENTS_PATH).drop(columns=["expected_score"], errors="ignore")
+    out = {}
+    for row in df.to_dict("records"):
+        sk_id = int(row.pop("SK_ID_CURR"))
+        out[sk_id] = {k: (v.item() if hasattr(v, "item") else v) for k, v in row.items() if pd.notna(v)}
+    return out
 
 
 def get_model() -> ScoringModel:
@@ -64,7 +81,7 @@ def _log(**record) -> None:
 def score_client(client: ClientData, endpoint: str, t_start: float) -> PredictionResponse:
     model = get_model()
     request_id = str(uuid.uuid4())
-    inputs = client.model_dump()
+    inputs = client.to_record()
     try:
         score, inference_ms = model.predict_one(inputs)
     except Exception as exc:
@@ -113,8 +130,24 @@ def health():
 def model_info():
     model = get_model()
     return {"version": model.version, "backend": model.backend,
+            "algorithm": model.meta.get("algorithm"),
             "threshold": model.threshold, "metrics": model.meta.get("metrics", {}),
-            "features": model.meta.get("raw_features", [])}
+            "n_model_columns": len(model.preprocessor.model_columns),
+            "input_fields": model.preprocessor.input_columns,
+            "monitored_features": model.meta.get("monitored_features", [])}
+
+
+@app.get("/clients", summary="Identifiants des dossiers d'exemple")
+def list_clients(limit: int = 50):
+    return sorted(STATE.get("clients", {}))[: max(1, min(limit, 1000))]
+
+
+@app.get("/clients/{sk_id}", summary="Dossier d'exemple, prêt à envoyer à /predict")
+def get_client(sk_id: int):
+    client = STATE.get("clients", {}).get(sk_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Dossier d'exemple introuvable")
+    return client
 
 
 @app.post("/predict", response_model=PredictionResponse)
@@ -127,4 +160,4 @@ if config.ENABLE_UI:
     from app.ui import build_ui
     import gradio as gr
 
-    app = gr.mount_gradio_app(app, build_ui(score_client), path="/ui")
+    app = gr.mount_gradio_app(app, build_ui(score_client, load_sample_clients()), path="/ui")

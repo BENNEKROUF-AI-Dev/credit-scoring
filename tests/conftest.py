@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -18,19 +19,32 @@ def _isolated_env(tmp_path_factory):
     yield
 
 
+def _clean(row: dict) -> dict:
+    return {k: (v.item() if hasattr(v, "item") else v) for k, v in row.items() if pd.notna(v)}
+
+
+@pytest.fixture(scope="session")
+def sample_df() -> pd.DataFrame:
+    """Dossiers du jeu de test du projet précédent + score attendu (calculé à l'export)."""
+    model_dir = Path(os.getenv("MODEL_DIR", ROOT / "model"))
+    return pd.read_parquet(model_dir / "sample_clients.parquet")
+
+
+@pytest.fixture(scope="session")
+def sample_records(sample_df) -> list[dict]:
+    return [_clean(r) for r in sample_df.drop(columns=["SK_ID_CURR", "expected_score"]).to_dict("records")]
+
+
 @pytest.fixture
-def valid_client() -> dict:
-    return {
-        "EXT_SOURCE_1": 0.45, "EXT_SOURCE_2": 0.62, "EXT_SOURCE_3": 0.51,
-        "AMT_INCOME_TOTAL": 180000, "AMT_CREDIT": 600000, "AMT_ANNUITY": 28000,
-        "AMT_GOODS_PRICE": 540000, "DAYS_BIRTH": -14000, "DAYS_EMPLOYED": -2500,
-        "CNT_CHILDREN": 1, "CODE_GENDER": "F", "NAME_EDUCATION_TYPE": "Higher education",
-    }
+def valid_client(sample_records) -> dict:
+    """Un dossier complet et valide (copie modifiable)."""
+    rec = next(r for r in sample_records
+               if r.get("AMT_ANNUITY") and r.get("DAYS_EMPLOYED", 0) != 365243)
+    return dict(rec)
 
 
 @pytest.fixture(scope="session")
 def client():
-    # import tardif : les variables d'environnement ci-dessus doivent être posées avant
     import importlib
     import app.config
     importlib.reload(app.config)

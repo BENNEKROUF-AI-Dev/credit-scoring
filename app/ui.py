@@ -1,5 +1,8 @@
 """Interface Gradio de démonstration, montée sur l'API FastAPI (/ui).
-Elle passe par la même validation et la même journalisation que /predict."""
+
+On choisit un dossier d'exemple (jeu de test du projet précédent), on peut modifier
+les variables les plus influentes, puis on évalue. La requête passe par la même
+validation et la même journalisation que /predict."""
 from __future__ import annotations
 
 import time
@@ -9,61 +12,77 @@ from pydantic import ValidationError
 
 from app.schemas import ClientData
 
-EDUCATION = ["Lower secondary", "Secondary / secondary special", "Incomplete higher",
-             "Higher education", "Academic degree"]
+EDITABLE = [  # (variable, libellé, type)
+    ("EXT_SOURCE_1", "Score externe 1 (0-1)", "num"),
+    ("EXT_SOURCE_2", "Score externe 2 (0-1)", "num"),
+    ("EXT_SOURCE_3", "Score externe 3 (0-1)", "num"),
+    ("AMT_INCOME_TOTAL", "Revenu annuel", "num"),
+    ("AMT_CREDIT", "Montant du crédit", "num"),
+    ("AMT_ANNUITY", "Annuité", "num"),
+    ("AGE", "Âge (années)", "age"),
+]
 
 
-def make_predict_fn(score_fn):
+def make_predict_fn(score_fn, clients: dict):
     """Fonction appelée par le bouton de l'interface (testable sans navigateur)."""
-    def run(ext1, ext2, ext3, income, credit, annuity, goods, age, years_emp,
-            children, gender, education):
-        payload = {
-            "EXT_SOURCE_1": ext1, "EXT_SOURCE_2": ext2, "EXT_SOURCE_3": ext3,
-            "AMT_INCOME_TOTAL": income, "AMT_CREDIT": credit, "AMT_ANNUITY": annuity,
-            "AMT_GOODS_PRICE": goods or None,
-            "DAYS_BIRTH": int(-age * 365.25) if age else None,
-            "DAYS_EMPLOYED": int(-years_emp * 365.25) if years_emp is not None else None,
-            "CNT_CHILDREN": int(children or 0),
-            "CODE_GENDER": gender, "NAME_EDUCATION_TYPE": education,
-        }
+    def run(sk_id, *values):
+        record = dict(clients.get(int(sk_id), {})) if sk_id is not None else {}
+        for (col, _, kind), v in zip(EDITABLE, values):
+            if kind == "age":
+                if v is not None:
+                    record["DAYS_BIRTH"] = int(-float(v) * 365.25)
+            elif v is None or v == "":
+                record.pop(col, None)
+            else:
+                record[col] = float(v)
         try:
-            client = ClientData(**payload)
+            client = ClientData.model_validate(record)
         except ValidationError as exc:
-            msgs = "\n".join(f"- {'.'.join(map(str, e['loc'])) or 'données'} : {e['msg']}"
+            msgs = "\n".join(f"- {'.'.join(map(str, e['loc'])) or 'dossier'} : {e['msg']}"
                              for e in exc.errors())
             return f"### ⚠️ Données invalides\n{msgs}", None
         res = score_fn(client, "/ui", time.perf_counter())
         verdict = "✅ Crédit ACCORDÉ" if res.decision == "ACCORDE" else "❌ Crédit REFUSÉ"
         md = (f"## {verdict}\n"
-              f"Probabilité de défaut : **{res.score:.1%}** (seuil métier {res.threshold:.1%})\n\n"
+              f"Probabilité de défaut : **{res.score:.1%}** (seuil métier {res.threshold:.0%})\n\n"
               f"Modèle `{res.model_version}` · inférence {res.inference_ms:.2f} ms")
         return md, {"Risque de défaut": res.score, "Remboursement": 1 - res.score}
     return run
 
 
-def build_ui(score_fn) -> gr.Blocks:
-    run = make_predict_fn(score_fn)
+def make_load_fn(clients: dict):
+    def load(sk_id):
+        rec = clients.get(int(sk_id), {}) if sk_id is not None else {}
+        out = []
+        for col, _, kind in EDITABLE:
+            if kind == "age":
+                out.append(round(-rec["DAYS_BIRTH"] / 365.25, 1) if "DAYS_BIRTH" in rec else None)
+            else:
+                v = rec.get(col)
+                out.append(round(v, 4) if isinstance(v, float) else v)
+        return out
+    return load
 
+
+def build_ui(score_fn, clients: dict) -> gr.Blocks:
+    run, load = make_predict_fn(score_fn, clients), make_load_fn(clients)
+    ids = sorted(clients)[:200]
     with gr.Blocks(title="Prêt à Dépenser — Scoring") as demo:
-        gr.Markdown("# Prêt à Dépenser — Scoring crédit\nSaisissez les informations du client.")
+        gr.Markdown("# Prêt à Dépenser — Scoring crédit\n"
+                    "Choisissez un dossier client, ajustez éventuellement les variables clés, puis évaluez.")
+        sk = gr.Dropdown(ids, value=ids[0] if ids else None, label="Dossier (SK_ID_CURR)")
+        inputs = []
         with gr.Row():
             with gr.Column():
-                ext1 = gr.Slider(0, 1, 0.5, label="EXT_SOURCE_1")
-                ext2 = gr.Slider(0, 1, 0.6, label="EXT_SOURCE_2")
-                ext3 = gr.Slider(0, 1, 0.5, label="EXT_SOURCE_3")
-                gender = gr.Radio(["F", "M"], value="F", label="Genre")
-                education = gr.Dropdown(EDUCATION, value="Higher education", label="Éducation")
+                for col, label, _ in EDITABLE[:3]:
+                    inputs.append(gr.Number(label=label, minimum=0, maximum=1, step=0.01))
             with gr.Column():
-                income = gr.Number(180000, label="Revenu annuel")
-                credit = gr.Number(600000, label="Montant du crédit")
-                annuity = gr.Number(28000, label="Annuité")
-                goods = gr.Number(540000, label="Prix du bien")
-                age = gr.Number(38, label="Âge (années)")
-                years_emp = gr.Number(7, label="Ancienneté emploi (années)")
-                children = gr.Number(1, label="Nombre d'enfants", precision=0)
+                for col, label, _ in EDITABLE[3:]:
+                    inputs.append(gr.Number(label=label))
         btn = gr.Button("Évaluer le client", variant="primary")
         out_md = gr.Markdown()
         out_label = gr.Label(label="Probabilités")
-        btn.click(run, [ext1, ext2, ext3, income, credit, annuity, goods, age, years_emp,
-                        children, gender, education], [out_md, out_label])
+        sk.change(load, sk, inputs)
+        demo.load(load, sk, inputs)
+        btn.click(run, [sk, *inputs], [out_md, out_label])
     return demo
