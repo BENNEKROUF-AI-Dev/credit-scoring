@@ -68,15 +68,23 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      HF_SPACE: ${{ vars.HF_SPACE }}   # ex : mon-pseudo/credit-scoring-api
+      RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}   # URL secrète fournie par Render
+      RENDER_URL: ${{ vars.RENDER_URL }}                     # ex : https://credit-scoring-api.onrender.com
     steps:
-      - uses: actions/checkout@v4
-      - name: Déployer sur Hugging Face Spaces (Docker)
-        if: env.HF_TOKEN != '' && env.HF_SPACE != ''
+      - name: Déclencher le déploiement sur Render
+        if: env.RENDER_DEPLOY_HOOK != ''
         run: |
-          pip install huggingface_hub
-          python scripts/deploy_hf_space.py
-      - name: Pas de secret HF_TOKEN — déploiement ignoré
-        if: env.HF_TOKEN == '' || env.HF_SPACE == ''
-        run: echo "Configurez le secret HF_TOKEN et la variable HF_SPACE pour activer le déploiement."
+          curl -fsS -X POST "$RENDER_DEPLOY_HOOK" > /dev/null
+          echo "Déploiement déclenché sur Render (commit ${GITHUB_SHA::7})"
+      - name: Vérifier que l'API en ligne répond
+        if: env.RENDER_DEPLOY_HOOK != '' && env.RENDER_URL != ''
+        run: |
+          sleep 90   # laisse Render construire et démarrer la nouvelle version
+          for i in $(seq 1 40); do
+            if curl -fs "$RENDER_URL/health"; then echo; echo "API en ligne : $RENDER_URL/docs"; exit 0; fi
+            sleep 15
+          done
+          echo "L'API ne répond pas après ~11 min" && exit 1
+      - name: Pas de secret RENDER_DEPLOY_HOOK — déploiement ignoré
+        if: env.RENDER_DEPLOY_HOOK == ''
+        run: echo "Ajoutez le secret RENDER_DEPLOY_HOOK pour activer le déploiement."

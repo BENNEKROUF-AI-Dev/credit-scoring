@@ -5,7 +5,7 @@ Mise en production du modèle de scoring développé au projet précédent (note
 `scoring_credit`). Le projet comprend :
 - une API **FastAPI** avec une interface **Gradio** ;
 - une image **Docker** ;
-- un pipeline **CI/CD GitHub Actions** (tests, build, déploiement sur Hugging Face Spaces) ;
+- un pipeline **CI/CD GitHub Actions** (tests, build, déploiement sur Render) ;
 - le stockage des données de production ;
 - le **monitoring et la détection de data drift** (Evidently, Streamlit) ;
 - l'**optimisation de l'inférence** (profiling, ONNX Runtime).
@@ -21,7 +21,7 @@ Mise en production du modèle de scoring développé au projet précédent (note
  notebook 2 → MLflow scoring_credit ─┴─► scripts/export_model.py ─► model/ (ONNX, métadonnées)
                                                                         │
           ┌────────────── GitHub Actions (push sur main) ───────────────┤
-          │  1. pytest  →  2. docker build + smoke test  →  3. GHCR  →  4. Hugging Face Space
+          │  1. pytest  →  2. docker build + smoke test  →  3. GHCR  →  4. Render
           └─────────────────────────────────────────────────────────────┘
                                          │
  Client ──HTTP──► FastAPI /predict ──► validation Pydantic ──► variables dérivées (notebook 1)
@@ -49,7 +49,6 @@ scripts/
   export_model.py       récupère le modèle MLflow, vérifie l'encodage, convertit en ONNX
   simulate_traffic.py   simulation de trafic de production (avec dérive)
   benchmark.py          profiling cProfile et comparaison des optimisations
-  deploy_hf_space.py    déploiement Hugging Face (appelé par la CI/CD)
 monitoring/
   drift_analysis.py     analyse automatique : drift, PSI, erreurs, latences, alertes
   dashboard.py          dashboard Streamlit
@@ -183,15 +182,23 @@ Déclenché à chaque push et pull request sur `main`.
 2. **build** (seulement si les tests passent) : construction de l'image Docker, puis *smoke test* du
    conteneur. Il appelle `/health`, envoie un dossier minimal et un dossier complet, puis vérifie
    qu'une requête invalide renvoie 422. Sur `main`, l'image est publiée sur GitHub Container Registry.
-3. **deploy** (seulement sur `main`) : déploiement sur un Hugging Face Space (SDK Docker).
+3. **deploy** (seulement sur `main`) : déclenche le déploiement sur **Render** (offre gratuite,
+   image construite depuis le `Dockerfile`), puis vérifie que l'API en ligne répond sur `/health`.
 
 **Configuration du déploiement :**
-1. Créez un token *write* sur huggingface.co (Settings → Access Tokens).
-2. Dans le dépôt GitHub, allez dans Settings → Secrets and variables → Actions.
-3. Ajoutez le **secret** `HF_TOKEN`.
-4. Ajoutez la **variable** `HF_SPACE` (par exemple `mon-pseudo/credit-scoring-api`).
+1. Sur render.com, créez un *Web Service* relié à ce dépôt : runtime **Docker**, instance **Free**,
+   variable d'environnement `ENABLE_UI=0`, *Health Check Path* `/health`, *Auto-Deploy* **Off**
+   (c'est la CI qui déploie, seulement si les tests passent).
+2. Copiez le *Deploy Hook* du service (Settings → Deploy Hook).
+3. Dans GitHub (Settings → Secrets and variables → Actions) : **secret** `RENDER_DEPLOY_HOOK`
+   = le Deploy Hook, **variable** `RENDER_URL` = l'adresse du service (ex. `https://credit-scoring-api.onrender.com`).
 
 Aucun identifiant n'est écrit dans le code. Sans ces réglages, le job de déploiement est ignoré.
+
+**Pourquoi Render ?** Hugging Face Spaces exige désormais un abonnement payant pour les Spaces
+Docker. L'offre gratuite de Render suffit pour un PoC, avec deux limites à connaître : 512 Mo de
+RAM (d'où l'interface Gradio désactivée en ligne, Swagger `/docs` reste disponible) et une mise en
+veille après 15 min d'inactivité (premier appel ≈ 1 min ensuite).
 
 ## Monitoring : lancer et interpréter
 
@@ -234,4 +241,4 @@ Pour aller plus loin :
   PostgreSQL, et les logs peuvent être collectés par Fluentd ou Logstash.
 - **Evidently + Streamlit** : tests statistiques adaptés au type de chaque variable, et dashboard
   interactif écrit en Python.
-- **Hugging Face Spaces** : hébergement Docker gratuit, déploiement par API depuis la CI.
+- **Render** : hébergement Docker gratuit, déploiement déclenché par la CI après les tests.
