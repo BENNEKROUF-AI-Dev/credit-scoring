@@ -111,3 +111,4 @@ class HealthResponse(BaseModel):
     model_loaded: bool
     backend: str
     model_version: str
+    storage: str = "none"

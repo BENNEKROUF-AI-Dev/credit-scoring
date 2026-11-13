@@ -11,6 +11,14 @@ jobs:
   # ------------------------------------------------------------------ 1. TESTS
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:   # base de test pour le stockage PostgreSQL (même moteur que NeonDB)
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,6 +31,7 @@ jobs:
       - name: Tests unitaires et d'intégration
         env:
           ENABLE_UI: "0"
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: pytest -v --cov=app --cov-report=term-missing --cov-fail-under=80
 
   # ------------------------------------------------------------------ 2. BUILD

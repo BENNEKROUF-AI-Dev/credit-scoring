@@ -160,6 +160,7 @@ Une erreur interne renvoie **500**, sans détail d'implémentation.
 | `FAST_FEATURES` | `1` | `0` pour revenir à la préparation pandas (v1) |
 | `DATA_DIR` | `data/` | Emplacement des logs |
 | `ENABLE_UI` | `1` | Monte l'interface Gradio |
+| `DATABASE_URL` | vide | Base PostgreSQL (NeonDB) des prédictions ; vide = SQLite local `data/predictions.db` |
 
 ## Tests
 
@@ -200,6 +201,27 @@ Docker. L'offre gratuite de Render suffit pour un PoC, avec deux limites à conn
 RAM (d'où l'interface Gradio désactivée en ligne, Swagger `/docs` reste disponible) et une mise en
 veille après 15 min d'inactivité (premier appel ≈ 1 min ensuite).
 
+## Stockage des prédictions : SQLite ou NeonDB
+
+Chaque appel à l'API enregistre le dossier reçu (`inputs`), le score, la décision, le seuil, la version
+du modèle, le temps d'inférence, la latence et l'erreur éventuelle, dans la table `predictions`
+(et dans les logs JSON `data/predictions.jsonl`).
+
+- **En local** (par défaut) : un fichier SQLite, `data/predictions.db`.
+- **En production** : une base PostgreSQL **NeonDB**, activée par la variable `DATABASE_URL`. La couche
+  qui stocke est ainsi **séparée de la couche qui calcule** : les données survivent aux redéploiements
+  de Render et se consultent indépendamment de l'API. Les écritures partent en arrière-plan, sans
+  ralentir les réponses.
+
+**Mise en place de NeonDB :**
+1. Sur neon.tech, créez un projet (région Europe) et copiez la *connection string*
+   (`postgresql://…neon.tech/neondb?sslmode=require`).
+2. Dans Render, service `credit-scoring-api` → *Environment* : ajoutez `DATABASE_URL` = cette URL.
+   La table est créée automatiquement au démarrage. `/health` affiche alors `"storage": "postgres"`.
+3. Pour analyser les vraies requêtes en ligne, définissez la même variable en local
+   (PowerShell : `$env:DATABASE_URL="postgresql://…"`), puis lancez le notebook, le dashboard ou
+   `python -m monitoring.drift_analysis` : ils lisent alors NeonDB au lieu du fichier local.
+
 ## Monitoring : lancer et interpréter
 
 ```bash
@@ -237,6 +259,7 @@ Pour aller plus loin :
   que sur les variables clés.
 - **ONNX** : le modèle servi ne dépend plus des versions de scikit-learn ou LightGBM utilisées à
   l'entraînement, et c'est le moteur le plus rapide mesuré.
+- **NeonDB (PostgreSQL) en production, SQLite en local** : stockage séparé du calcul, consultable à tout moment ; SQLite garde un lancement local sans infrastructure.
 - **SQLite + JSON lines** : un PoC sans infrastructure. Le schéma est directement transposable à
   PostgreSQL, et les logs peuvent être collectés par Fluentd ou Logstash.
 - **Evidently + Streamlit** : tests statistiques adaptés au type de chaque variable, et dashboard

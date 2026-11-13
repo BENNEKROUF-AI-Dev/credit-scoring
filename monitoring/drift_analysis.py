@@ -5,7 +5,8 @@
 - Anomalies opérationnelles : taux d'erreur, latence anormale
 - Analyse par fenêtres temporelles pour voir QUAND la dérive apparaît
 
-    python -m monitoring.drift_analysis [--db data/predictions.db] [--windows 4]
+    python -m monitoring.drift_analysis [--db data/predictions.db | --db postgresql://…] [--windows 4]
+    (sans --db : DATABASE_URL si elle est définie, sinon data/predictions.db)
 
 Sorties : monitoring/reports/drift_report.html, monitoring/reports/summary.json
 Code retour 1 si une alerte est levée (utilisable dans un job planifié / CI).
@@ -59,7 +60,7 @@ def run_evidently(reference: pd.DataFrame, current: pd.DataFrame, html_path: Pat
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--db", default=str(DEFAULT_DB))
+    p.add_argument("--db", default=None, help="fichier SQLite ou URL PostgreSQL")
     p.add_argument("--windows", type=int, default=4, help="nb de fenêtres temporelles")
     args = p.parse_args()
 

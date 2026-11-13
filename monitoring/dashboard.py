@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -25,10 +26,14 @@ REF_COLOR, PROD_COLOR = "#8a94a6", "#2563eb"
 st.set_page_config(page_title="Monitoring — Scoring crédit", layout="wide")
 st.title("Monitoring du modèle de scoring — Prêt à Dépenser")
 
-db_path = st.sidebar.text_input("Base des prédictions", str(DEFAULT_DB))
-if not Path(db_path).exists():
-    st.warning("Aucune base trouvée. Lancez l'API puis `python -m scripts.simulate_traffic`.")
-    st.stop()
+if os.getenv("DATABASE_URL"):
+    db_path = None  # PostgreSQL (ex. NeonDB) via DATABASE_URL
+    st.sidebar.success("Source : base PostgreSQL (DATABASE_URL)")
+else:
+    db_path = st.sidebar.text_input("Base des prédictions", str(DEFAULT_DB))
+    if not Path(db_path).exists():
+        st.warning("Aucune base trouvée. Lancez l'API puis `python -m scripts.simulate_traffic`.")
+        st.stop()
 
 
 @st.cache_data(ttl=30)

@@ -8,3 +8,5 @@ pyarrow==26.0.0
 onnxruntime==1.29.0
 lightgbm==4.7.0
 gradio==6.31.0
+# Stockage des prédictions dans PostgreSQL (NeonDB), si DATABASE_URL est définie
+psycopg[binary]==3.3.9

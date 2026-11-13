@@ -11,6 +11,7 @@ def test_health(client):
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok" and body["model_loaded"] is True
+    assert body["storage"] in {"sqlite", "postgres"}
 
 
 def test_model_info(client):

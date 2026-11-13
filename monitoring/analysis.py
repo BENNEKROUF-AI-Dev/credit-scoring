@@ -28,9 +28,24 @@ ALERTS = {
 }
 
 
-def load_logs(db_path: Path | str = DEFAULT_DB) -> pd.DataFrame:
-    with sqlite3.connect(db_path) as conn:
-        df = pd.read_sql("SELECT * FROM predictions ORDER BY id", conn)
+def data_source(source: Path | str | None = None) -> str:
+    """Base à lire : `source` si donné, sinon DATABASE_URL (ex. NeonDB), sinon le SQLite local."""
+    if source:
+        return str(source)
+    return os.getenv("DATABASE_URL") or str(DEFAULT_DB)
+
+
+def load_logs(source: Path | str | None = None) -> pd.DataFrame:
+    """Charge la table `predictions` depuis PostgreSQL (URL postgres://…) ou SQLite (fichier)."""
+    src = data_source(source)
+    if src.startswith(("postgres://", "postgresql://")):
+        import psycopg
+        with psycopg.connect(src) as conn:
+            cur = conn.execute("SELECT * FROM predictions ORDER BY id")
+            df = pd.DataFrame(cur.fetchall(), columns=[c.name for c in cur.description])
+    else:
+        with sqlite3.connect(src) as conn:
+            df = pd.read_sql("SELECT * FROM predictions ORDER BY id", conn)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601")
     return df
 

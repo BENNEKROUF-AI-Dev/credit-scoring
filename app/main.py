@@ -32,10 +32,12 @@ async def lifespan(app: FastAPI):
     STATE["model"] = ScoringModel()
     STATE["clients"] = load_sample_clients()
     STATE["store"] = (
-        PredictionStore(config.PREDICTIONS_DB, config.PREDICTIONS_LOG)
+        PredictionStore(config.PREDICTIONS_DB, config.PREDICTIONS_LOG, config.DATABASE_URL)
         if config.ENABLE_PREDICTION_LOGGING else None
     )
     yield
+    if STATE.get("store") is not None:
+        STATE["store"].close()  # termine les écritures en attente avant l'arrêt
     STATE.clear()
 
 
@@ -120,10 +122,11 @@ def root():
 
 @app.get("/health", response_model=HealthResponse)
 def health():
-    model = STATE.get("model")
+    model, store = STATE.get("model"), STATE.get("store")
     return HealthResponse(status="ok" if model else "degraded", model_loaded=model is not None,
                           backend=getattr(model, "backend", "none"),
-                          model_version=getattr(model, "version", "none"))
+                          model_version=getattr(model, "version", "none"),
+                          storage=getattr(store, "backend", "none"))
 
 
 @app.get("/model-info")
